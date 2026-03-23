@@ -36,6 +36,7 @@ func _process(_dt: float) -> void:
 func _draw() -> void:
 	_draw_bursts()
 	_draw_fog()
+	_draw_depot_radius()
 	_draw_truck_radius()
 	_draw_ghost()
 
@@ -76,6 +77,19 @@ func _draw_fog() -> void:
 	var img := Image.create_from_data(Game.MAP_COLS, Game.MAP_ROWS, false, Image.FORMAT_RGBA8, _fog_data)
 	_fog_tex.update(img)
 	draw_polygon(_fog_pts, _fog_white, _fog_uvs, _fog_tex)
+
+# ── supply depot aura ──────────────────────────────────────────────────────────
+func _draw_depot_radius() -> void:
+	var ss = Game.selected_structure
+	if ss == null or not is_instance_valid(ss) or not (ss is SupplyDepot): return
+	if ss.faction != Game.PLAYER: return
+	var cx: float = ss.grid_col + ss.grid_w * 0.5
+	var cy: float = ss.grid_row + ss.grid_h * 0.5
+	var c := Game.grid_to_world(cx, cy, 0)
+	var rx := Game.DEPOT_SUPPLY_R * Game.BASE_TILE_W * 0.70710678
+	var ry := Game.DEPOT_SUPPLY_R * Game.BASE_TILE_H * 0.70710678
+	_ellipse_fill(c, rx, ry, Color(0.310, 0.776, 0.902, 0.07))
+	_ellipse_stroke(c, rx, ry, Color(0.443, 0.847, 0.957, 0.6), 1.5)
 
 # ── truck resupply radius ────────────────────────────────────────────────────
 func _draw_truck_radius() -> void:

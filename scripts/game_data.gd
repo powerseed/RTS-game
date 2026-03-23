@@ -41,10 +41,13 @@ const TRUCK_CARGO     := 500.0
 const TRUCK_SPEED     := 1.26
 const TRUCK_ARRIVE_R  := 0.34
 const TRUCK_RESUPPLY_R := 3.0
+const DEPOT_SUPPLY_R   := 8.0
 const TRUCK_RESUPPLY_S := 60.0
 
 # ── Gameplay tuning ──────────────────────────────────────────────────────────
 const SUP_PER_UNIT     := 0.5
+const SUP_PER_SHOT     := 5.0
+const SUP_IDLE_RATE    := 0.3  # supply consumed per second while idle
 const DRAG_THRESH      := 10.0
 const FORM_SPACE       := 0.92
 const TANK_COL_R       := 0.44
@@ -59,16 +62,14 @@ const VIS_TRUCK        := 4.4
 const VIS_FALLBACK     := 9.0
 
 const ATK_RANGE        := 4.8
+const ENEMY_SEEK_R     := 12.0
 const ATK_DMG          := 20.0
 const ATK_CD           := 0.95
 const TRACER_TTL       := 0.16
 const DMG_BAR_S        := 1.35
 
 const INIT_ENEMIES := [
-	{"x": 64.5, "y": 48.7, "hx": -1.0, "hy": 0.1},
-	{"x": 66.1, "y": 50.3, "hx": -1.0, "hy": -0.08},
-	{"x": 65.2, "y": 52.1, "hx": -0.96, "hy": -0.18},
-	{"x": 68.2, "y": 49.5, "hx": -0.94, "hy": 0.22},
+	{"x": 17.5, "y": 48.5, "hx": -1.0, "hy": 0.1},
 ]
 
 # ── Mutable game state ───────────────────────────────────────────────────────

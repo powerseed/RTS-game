@@ -43,6 +43,7 @@ func _process(dt: float) -> void:
 	if Game.ptr_in:
 		Game.hover_tile = Game.tile_at(Game.ptr_scr.x, Game.ptr_scr.y)
 	# Tank production handled by Timer nodes on TankPlant instances
+	_update_enemy_ai()
 	_update_units(dt)
 	_resolve_collisions()
 	_update_combat(dt)
@@ -221,19 +222,23 @@ func _on_train_tank() -> void:
 		hud.set_status("Tank Plant is already building.")
 		return
 	var cost := 500.0  # total build cost; tank spawns fully supplied
-	# Find a depot with enough supply
+	# Centre of the Tank Plant in grid coords
+	var px: float = ss.grid_col + ss.grid_w * 0.5
+	var py: float = ss.grid_row + ss.grid_h * 0.5
+	# Find a nearby depot with enough supply
 	var depot: SupplyDepot = null
+	var any_nearby := false
 	for s: Structure in Game.get_structures():
-		if s is SupplyDepot and s.faction == Game.PLAYER and s.stored >= cost:
+		if not (s is SupplyDepot) or s.faction != Game.PLAYER: continue
+		var dx := (s.grid_col + s.grid_w * 0.5) - px
+		var dy := (s.grid_row + s.grid_h * 0.5) - py
+		if sqrt(dx * dx + dy * dy) > Game.DEPOT_SUPPLY_R: continue
+		any_nearby = true
+		if s.stored >= cost:
 			depot = s
 			break
 	if depot == null:
-		# Check if any depot exists at all
-		var any_depot := false
-		for s: Structure in Game.get_structures():
-			if s is SupplyDepot and s.faction == Game.PLAYER:
-				any_depot = true; break
-		if not any_depot:
+		if not any_nearby:
 			hud.show_prod_error("No " + DEPOT_NAME + " nearby.")
 		else:
 			hud.show_prod_error("Insufficient " + RESOURCE_NAME + ".")
@@ -357,6 +362,8 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 # ═══════════════════════════════════════════════════════════════════════════════
 func _update_units(dt: float) -> void:
 	for u: Unit in Game.get_units():
+		if u.consumes_supplies:
+			u.supplies = maxf(0.0, u.supplies - Game.SUP_IDLE_RATE * dt)
 		if u.consumes_supplies and u.supplies <= 0:
 			u.supplies = 0.0; continue
 		# truck follow target
@@ -387,7 +394,8 @@ func _update_units(dt: float) -> void:
 		else:
 			u.heading = Vector2(dx / dist, dy / dist)
 			var max_by_sup: float = dist if not u.consumes_supplies else u.supplies / Game.SUP_PER_UNIT
-			var travel := minf(dist, minf(u.speed * dt, max_by_sup))
+			var hp_ratio: float = u.hp / u.max_hp if u.max_hp > 0 else 1.0
+			var travel := minf(dist, minf(u.speed * hp_ratio * dt, max_by_sup))
 			if travel <= 0:
 				if u.consumes_supplies: u.supplies = 0.0
 				continue
@@ -493,7 +501,11 @@ func _update_combat(_dt: float) -> void:
 		if d <= 0.001: continue
 		u.heading = Vector2(dx / d, dy / d)
 		if not u.attack_timer.is_stopped(): continue
-		u.attack_timer.start()
+		if u.consumes_supplies and u.supplies < Game.SUP_PER_SHOT: continue
+		var atk_hp_ratio: float = u.hp / u.max_hp if u.max_hp > 0 else 1.0
+		u.attack_timer.start(Game.ATK_CD / maxf(atk_hp_ratio, 0.1))
+		if u.consumes_supplies:
+			u.supplies = maxf(0.0, u.supplies - Game.SUP_PER_SHOT)
 		tgt.hp = maxf(0.0, tgt.hp - u.attack_damage)
 		tgt.status_display_until = Game.elapsed + Game.DMG_BAR_S
 		overlay.add_burst({
@@ -560,6 +572,23 @@ func _reveal(cx: float, cy: float, rad: float) -> void:
 				Game.fog_set(c, r)
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  ENEMY AI
+# ═══════════════════════════════════════════════════════════════════════════════
+func _update_enemy_ai() -> void:
+	for u: Unit in Game.get_units():
+		if u.faction != Game.ENEMY or not (u is Tank) or u.hp <= 0: continue
+		var tgt := _nearest_hostile(u, u.attack_range)
+		if tgt != null:
+			u.destination = Vector2(tgt.gx, tgt.gy)
+		else:
+			# Seek nearest player unit within a larger detection range
+			var seek := _nearest_hostile(u, Game.ENEMY_SEEK_R)
+			if seek != null:
+				u.destination = Vector2(seek.gx, seek.gy)
+			else:
+				u.destination = null
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  SPAWN
 # ═══════════════════════════════════════════════════════════════════════════════
 func _spawn_enemies() -> void:
@@ -575,10 +604,7 @@ func _spawn_enemies() -> void:
 		tank.gy = sp.y
 		tank.consumes_supplies = false
 		tank.accepts_resupply = false
-		tank.vision_radius = 0.0
-		tank.speed = 0.0
 		tank.heading = Vector2(e.hx, e.hy)
-		tank.can_attack = false
 		entities.add_child(tank)
 
 func _spawn_starting_depot() -> void:
