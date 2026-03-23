@@ -2,8 +2,9 @@ extends Control
 ## HUD overlay – build menu, selection info, status bar, unit status panel.
 ## Communicates with Main via the build_requested signal (no tree-walking).
 
-# ── Signal for build requests (connected by Main) ───────────────────────────
+# ── Signals (connected by Main) ──────────────────────────────────────────────
 signal build_requested(btype: String)
+signal train_tank_requested
 
 # ── element refs (scene-unique nodes from hud.tscn) ────────────────────────
 @onready var brand_panel: PanelContainer = %BrandPanel
@@ -29,6 +30,13 @@ signal build_requested(btype: String)
 @onready var sup_label: Label = %SupLabel
 @onready var sup_value: Label = %SupValue
 @onready var sup_bar: ProgressBar = %SupBar
+
+# ── production panel (built in code) ─────────────────────────────────────────
+var prod_panel: PanelContainer
+var btn_train_tank: Button
+var prod_progress: ProgressBar
+var prod_label: Label
+var prod_error: Label
 
 # ── colours ──────────────────────────────────────────────────────────────────
 const C_PANEL   := Color(0.204, 0.137, 0.075, 0.80)
@@ -65,6 +73,64 @@ func _ready() -> void:
 	hp_bar.add_theme_stylebox_override("fill", _bar_style(C_HP_A, C_HP_B))
 	sup_bar.add_theme_stylebox_override("background", _bar_bg_style())
 	sup_bar.add_theme_stylebox_override("fill", _bar_style(C_SUP_A, C_SUP_B))
+	_create_prod_panel()
+
+func _create_prod_panel() -> void:
+	prod_panel = PanelContainer.new()
+	prod_panel.add_theme_stylebox_override("panel", _panel_style(16))
+	prod_panel.layout_mode = 1
+	prod_panel.anchor_left = 0.5; prod_panel.anchor_right = 0.5
+	prod_panel.anchor_top = 1.0; prod_panel.anchor_bottom = 1.0
+	prod_panel.offset_left = -100; prod_panel.offset_right = 100
+	prod_panel.offset_top = -148; prod_panel.offset_bottom = -118
+	prod_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var vbox_outer := VBoxContainer.new()
+	vbox_outer.add_theme_constant_override("separation", 6)
+	prod_panel.add_child(vbox_outer)
+	var hbox := HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 12)
+	hbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox_outer.add_child(hbox)
+	# tank icon button
+	btn_train_tank = Button.new()
+	btn_train_tank.text = "  Build Tank (500)"
+	btn_train_tank.custom_minimum_size = Vector2(140, 0)
+	btn_train_tank.focus_mode = Control.FOCUS_NONE
+	btn_train_tank.add_theme_stylebox_override("normal", _btn_style())
+	btn_train_tank.add_theme_stylebox_override("hover", _btn_style())
+	btn_train_tank.add_theme_stylebox_override("pressed", _btn_style_armed())
+	btn_train_tank.add_theme_stylebox_override("focus", _btn_style())
+	btn_train_tank.add_theme_color_override("font_color", C_TEXT)
+	btn_train_tank.add_theme_font_size_override("font_size", 14)
+	btn_train_tank.pressed.connect(func(): train_tank_requested.emit())
+	hbox.add_child(btn_train_tank)
+	# progress bar
+	var bar_vbox := VBoxContainer.new()
+	bar_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar_vbox.add_theme_constant_override("separation", 2)
+	hbox.add_child(bar_vbox)
+	prod_label = Label.new()
+	prod_label.text = "Idle"
+	prod_label.add_theme_color_override("font_color", C_ACCENT)
+	prod_label.add_theme_font_size_override("font_size", 11)
+	bar_vbox.add_child(prod_label)
+	prod_progress = ProgressBar.new()
+	prod_progress.max_value = 1.0
+	prod_progress.show_percentage = false
+	prod_progress.custom_minimum_size = Vector2(80, 12)
+	prod_progress.add_theme_stylebox_override("background", _bar_bg_style())
+	prod_progress.add_theme_stylebox_override("fill", _bar_style(C_ACCENT, C_SUP_B))
+	bar_vbox.add_child(prod_progress)
+	# error message label
+	prod_error = Label.new()
+	prod_error.text = ""
+	prod_error.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
+	prod_error.add_theme_font_size_override("font_size", 12)
+	prod_error.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	prod_error.visible = false
+	vbox_outer.add_child(prod_error)
+	add_child(prod_panel)
+	prod_panel.visible = false
 
 func _process(_dt: float) -> void:
 	queue_redraw()
@@ -189,6 +255,14 @@ func set_sel_pill(txt: String) -> void:
 func set_sel_detail(txt: String) -> void:
 	lbl_sel_detail.text = txt
 
+func show_prod_error(msg: String) -> void:
+	prod_error.text = msg
+	prod_error.visible = true
+
+func clear_prod_error() -> void:
+	prod_error.text = ""
+	prod_error.visible = false
+
 func sync_build_buttons() -> void:
 	var armed_plant: bool = Game.build_mode == Game.T_PLANT
 	var armed_depot: bool = Game.build_mode == Game.T_DEPOT
@@ -203,6 +277,7 @@ func sync_build_buttons() -> void:
 func reset_selection() -> void:
 	lbl_sel_pill.text = "Nothing selected"
 	lbl_sel_detail.text = "Choose a structure from the build menu, click a structure, or drag-select movable units to command them."
+	prod_panel.visible = false
 
 func reset_unit_panel() -> void:
 	lbl_unit_pill.text = "No selection"
@@ -210,6 +285,7 @@ func reset_unit_panel() -> void:
 	lbl_unit_copy.text = "Click a structure, click a movable unit, or drag across the battlefield to inspect what is selected."
 	hp_row.visible = false
 	sup_row.visible = false
+	prod_panel.visible = false
 	hp_value.text = "HP: --"
 	sup_value.text = "Supplies: --"
 	hp_bar.value = 0; sup_bar.value = 0
@@ -217,10 +293,10 @@ func reset_unit_panel() -> void:
 func show_struct(s: Node2D) -> void:
 	if s is TankPlant:
 		lbl_sel_pill.text = s.label
-		lbl_sel_detail.text = "Non-movable production structure. Produces tanks automatically. Units built: " + str(s.produced) + "."
+		lbl_sel_detail.text = "Click Build Tank to produce a tank. Units built: " + str(s.produced) + "."
 		lbl_unit_pill.text = "Structure selected"
 		lbl_unit_name.text = "Tank Plant #" + str(s.entity_id)
-		lbl_unit_copy.text = "Non-movable production structure. Tanks roll out automatically from this factory."
+		lbl_unit_copy.text = "Production structure. Click the Build Tank button to queue a tank."
 		var prog: float = s.get_production_progress()
 		hp_row.visible = true
 		hp_label.text = "Assembly Progress"
@@ -230,7 +306,18 @@ func show_struct(s: Node2D) -> void:
 		sup_label.text = "Units Built"
 		sup_value.text = "Built: " + str(s.produced)
 		sup_bar.value = 1.0 if s.produced > 0 else 0.0
+		# show production panel
+		prod_panel.visible = true
+		prod_progress.value = prog
+		if s.building:
+			prod_label.text = str(roundi(prog * 100)) + "%"
+			btn_train_tank.add_theme_stylebox_override("normal", _btn_style_armed())
+			prod_error.visible = false
+		else:
+			prod_label.text = "Idle"
+			btn_train_tank.add_theme_stylebox_override("normal", _btn_style())
 	elif s is SupplyDepot:
+		prod_panel.visible = false
 		var ratio: float = s.stored / float(s.max_stored) if s.max_stored > 0 else 0.0
 		lbl_sel_pill.text = s.label
 		lbl_sel_detail.text = "Non-movable storage structure. Right-click the map or a movable unit to dispatch a 500-supply truck. Supplies stored: " + str(roundi(s.stored)) + " / " + str(roundi(s.max_stored)) + "."
@@ -244,6 +331,7 @@ func show_struct(s: Node2D) -> void:
 		sup_bar.value = ratio
 
 func show_units(us: Array[Node2D]) -> void:
+	prod_panel.visible = false
 	if us.size() == 1:
 		var u: Unit = us[0] as Unit
 		var is_truck: bool = u is Truck

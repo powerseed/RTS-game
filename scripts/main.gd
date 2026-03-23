@@ -17,7 +17,9 @@ func _ready() -> void:
 	get_tree().root.size_changed.connect(_on_resize)
 	_on_resize()
 	_spawn_enemies()
+	_spawn_starting_depot()
 	hud.build_requested.connect(toggle_build)
+	hud.train_tank_requested.connect(_on_train_tank)
 	hud.sync_build_buttons()
 	hud.reset_selection()
 	hud.reset_unit_panel()
@@ -187,7 +189,7 @@ func _attempt_place(c: int, r: int) -> void:
 	Game.build_mode = ""; Game.hover_tile = Vector2i(-1, -1)
 	hud.sync_build_buttons()
 	hud.set_status(
-		"Tank Plant deployed. It is already assembling tanks." if structure is TankPlant
+		"Tank Plant deployed. Click Build Tank to start production." if structure is TankPlant
 		else "Supply Depot deployed with 2000 stored supplies.")
 	Game.structure_placed.emit(structure)
 
@@ -206,6 +208,40 @@ func _on_tank_produced(plant: TankPlant) -> void:
 	tank.heading = Vector2(1.0, 0.0)
 	entities.add_child(tank)
 	Game.unit_spawned.emit(tank)
+	hud.set_status("Tank produced from Plant #" + str(plant.entity_id) + ".")
+
+func _on_train_tank() -> void:
+	const RESOURCE_NAME := "Supply"
+	const DEPOT_NAME := "Supply Depot"
+	var ss = Game.selected_structure
+	if ss == null or not is_instance_valid(ss) or not (ss is TankPlant):
+		hud.set_status("Select a Tank Plant first.")
+		return
+	if ss.building:
+		hud.set_status("Tank Plant is already building.")
+		return
+	var cost := 500.0  # total build cost; tank spawns fully supplied
+	# Find a depot with enough supply
+	var depot: SupplyDepot = null
+	for s: Structure in Game.get_structures():
+		if s is SupplyDepot and s.faction == Game.PLAYER and s.stored >= cost:
+			depot = s
+			break
+	if depot == null:
+		# Check if any depot exists at all
+		var any_depot := false
+		for s: Structure in Game.get_structures():
+			if s is SupplyDepot and s.faction == Game.PLAYER:
+				any_depot = true; break
+		if not any_depot:
+			hud.show_prod_error("No " + DEPOT_NAME + " nearby.")
+		else:
+			hud.show_prod_error("Insufficient " + RESOURCE_NAME + ".")
+		return
+	hud.clear_prod_error()
+	depot.stored -= cost
+	ss.queue_tank()
+	hud.set_status("Tank production started at Plant #" + str(ss.entity_id) + ". " + str(roundi(cost)) + " " + RESOURCE_NAME + " deducted.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SELECTION
@@ -511,9 +547,6 @@ func _update_fog() -> void:
 		if u.faction == Game.PLAYER:
 			has_friendly = true
 			_reveal(u.gx, u.gy, u.vision_radius)
-	if not has_friendly:
-		_reveal(Game.cam.x, Game.cam.y, Game.VIS_FALLBACK)
-
 func _reveal(cx: float, cy: float, rad: float) -> void:
 	var mnc := clampi(int(cx - rad), 0, Game.MAP_COLS - 1)
 	var mxc := clampi(ceili(cx + rad), 0, Game.MAP_COLS - 1)
@@ -547,6 +580,18 @@ func _spawn_enemies() -> void:
 		tank.heading = Vector2(e.hx, e.hy)
 		tank.can_attack = false
 		entities.add_child(tank)
+
+func _spawn_starting_depot() -> void:
+	var depot := SupplyDepotScene.instantiate() as SupplyDepot
+	depot.grid_col = 10
+	depot.grid_row = 48
+	depot.faction = Game.PLAYER
+	depot.entity_id = Game.next_id
+	Game.next_id += 1
+	entities.add_child(depot)
+	Game.structure_placed.emit(depot)
+	# Center camera on the depot
+	Game.cam = Vector2(depot.grid_col + depot.grid_w * 0.5, depot.grid_row + depot.grid_h * 0.5)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  UI REFRESH

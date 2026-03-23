@@ -1,26 +1,33 @@
 class_name TankPlant
 extends Structure
-## Tank production facility. Produces tanks automatically via a Timer node.
+## Tank production facility. Produces a tank when the player requests it.
 
 signal tank_produced(plant: TankPlant)
 
 @onready var production_timer: Timer = $ProductionTimer
 var produced: int = 0
+var building: bool = false
 
 func _ready() -> void:
 	super._ready()
 	label = "Tank Plant"
 	grid_w = 2
 	grid_h = 2
+	production_timer.one_shot = true
 	production_timer.timeout.connect(_on_production_timeout)
-	production_timer.start(0.8)
+
+func queue_tank() -> void:
+	if building: return
+	building = true
+	production_timer.start(Game.BLDG.tank_plant.prod_interval)
 
 func _on_production_timeout() -> void:
+	building = false
 	produced += 1
 	tank_produced.emit(self)
 
 func get_production_progress() -> float:
-	if production_timer and not production_timer.is_stopped():
+	if building and not production_timer.is_stopped():
 		return 1.0 - clampf(production_timer.time_left / production_timer.wait_time, 0, 1)
 	return 0.0
 
@@ -68,10 +75,11 @@ func _draw() -> void:
 	# factory bay
 	var fb := _fp(c + 0.95, r + 0.98, 0.72, 0.48, 40)
 	_poly_fill([fb.nw, fb.ne, fb.se, fb.sw], Color(0.082, 0.102, 0.118, 0.25))
-	# progress bar
-	var prog := get_production_progress()
-	var ba := Game.grid_to_world(c + grid_w * 0.5, r + grid_h * 0.5, hp + 32)
-	_progress_bar(ba.x - 42, ba.y, 84, prog)
+	# progress bar (only when building)
+	if building:
+		var prog := get_production_progress()
+		var ba := Game.grid_to_world(c + grid_w * 0.5, r + grid_h * 0.5, hp + 32)
+		_progress_bar(ba.x - 42, ba.y, 84, prog)
 	# selection glow
 	if sel:
 		_poly_stroke([pad.nw, pad.ne, pad.se, pad.sw],
