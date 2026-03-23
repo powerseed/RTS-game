@@ -1,0 +1,363 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/hud.gd" id="1"]
+
+[node name="HUD" type="Control"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("1")
+
+[node name="Left" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 0
+offset_left = 24.0
+offset_top = 24.0
+offset_right = 334.0
+custom_minimum_size = Vector2(310, 0)
+theme_override_constants/separation = 14
+mouse_filter = 2
+
+[node name="BrandPanel" type="PanelContainer" parent="Left"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="Left/BrandPanel"]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="Tag" type="Label" parent="Left/BrandPanel/VBox"]
+layout_mode = 2
+text = "PROTOTYPE RTS"
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 10
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="Left/BrandPanel/VBox"]
+layout_mode = 2
+text = "Field Foundry"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 28
+mouse_filter = 2
+
+[node name="Desc" type="Label" parent="Left/BrandPanel/VBox"]
+layout_mode = 2
+text = "Build a tank plant or supply depot, place it on an isometric battlefield, and push back the enemy armor already on the map."
+theme_override_colors/font_color = Color(0.835, 0.78, 0.631, 1)
+theme_override_font_sizes/font_size = 13
+autowrap_mode = 3
+mouse_filter = 2
+
+[node name="BuildPanel" type="PanelContainer" parent="Left"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="Left/BuildPanel"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Heading" type="HBoxContainer" parent="Left/BuildPanel/VBox"]
+layout_mode = 2
+alignment = 1
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="Left/BuildPanel/VBox/Heading"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Build Menu"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 16
+mouse_filter = 2
+
+[node name="Pill" type="Label" parent="Left/BuildPanel/VBox/Heading"]
+layout_mode = 2
+text = "Instant build"
+horizontal_alignment = 2
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="BtnPlant" type="Button" parent="Left/BuildPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Tank Plant
+Produces tanks automatically in an RA2-style isometric view."
+alignment = 0
+focus_mode = 0
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 13
+
+[node name="BtnDepot" type="Button" parent="Left/BuildPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Supply Depot
+Stores up to 2000 supplies for the force."
+alignment = 0
+focus_mode = 0
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 13
+
+[node name="LblHint" type="Label" parent="Left/BuildPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Select a structure, then click an open spot on the map."
+theme_override_colors/font_color = Color(0.835, 0.78, 0.631, 1)
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+mouse_filter = 2
+
+[node name="SelPanel" type="PanelContainer" parent="Left"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="Left/SelPanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Heading" type="HBoxContainer" parent="Left/SelPanel/VBox"]
+layout_mode = 2
+alignment = 1
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="Left/SelPanel/VBox/Heading"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Selected"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 16
+mouse_filter = 2
+
+[node name="LblSelPill" type="Label" parent="Left/SelPanel/VBox/Heading"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Nothing selected"
+horizontal_alignment = 2
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="LblSelDetail" type="Label" parent="Left/SelPanel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Choose a structure from the build menu, click a structure, or drag-select movable units to command them."
+theme_override_colors/font_color = Color(0.835, 0.78, 0.631, 1)
+theme_override_font_sizes/font_size = 13
+autowrap_mode = 3
+mouse_filter = 2
+
+[node name="NotePanel" type="PanelContainer" parent="Left"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="Left/NotePanel"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Heading" type="HBoxContainer" parent="Left/NotePanel/VBox"]
+layout_mode = 2
+alignment = 1
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="Left/NotePanel/VBox/Heading"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Mission Note"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 16
+mouse_filter = 2
+
+[node name="Pill" type="Label" parent="Left/NotePanel/VBox/Heading"]
+layout_mode = 2
+text = "10x battlefield"
+horizontal_alignment = 2
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="Desc" type="Label" parent="Left/NotePanel/VBox"]
+layout_mode = 2
+text = "Build plants and depots on the grassland. Enemy tanks start near the center. Fog of war hides distant ground. Use WASD, arrows, or screen edges to pan. Drag to select tanks or trucks and right-click to move. Player tanks auto-fire on enemies. Select a depot and right-click to dispatch supply trucks."
+theme_override_colors/font_color = Color(0.835, 0.78, 0.631, 1)
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+mouse_filter = 2
+
+[node name="StatusBar" type="PanelContainer" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -444.0
+offset_top = 24.0
+offset_right = -24.0
+custom_minimum_size = Vector2(420, 0)
+
+[node name="HBox" type="HBoxContainer" parent="StatusBar"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="InfoVBox" type="VBoxContainer" parent="StatusBar/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2
+
+[node name="Tag" type="Label" parent="StatusBar/HBox/InfoVBox"]
+layout_mode = 2
+text = "COMMAND FEED"
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 10
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="StatusBar/HBox/InfoVBox"]
+layout_mode = 2
+text = "Extended Isometric Map"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 16
+mouse_filter = 2
+
+[node name="LblStatus" type="Label" parent="StatusBar/HBox"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(180, 0)
+text = "Enemy armor detected near the center. Open terrain available for construction."
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+autowrap_mode = 3
+mouse_filter = 2
+
+[node name="UnitPanel" type="PanelContainer" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -110.0
+offset_right = -24.0
+offset_bottom = -24.0
+
+[node name="HBox" type="HBoxContainer" parent="UnitPanel"]
+layout_mode = 2
+theme_override_constants/separation = 20
+
+[node name="InfoVBox" type="VBoxContainer" parent="UnitPanel/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="Heading" type="HBoxContainer" parent="UnitPanel/HBox/InfoVBox"]
+layout_mode = 2
+alignment = 1
+mouse_filter = 2
+
+[node name="Title" type="Label" parent="UnitPanel/HBox/InfoVBox/Heading"]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Selection Status"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 16
+mouse_filter = 2
+
+[node name="LblUnitPill" type="Label" parent="UnitPanel/HBox/InfoVBox/Heading"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "No selection"
+horizontal_alignment = 2
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="LblUnitName" type="Label" parent="UnitPanel/HBox/InfoVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Nothing selected"
+theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
+theme_override_font_sizes/font_size = 15
+mouse_filter = 2
+
+[node name="LblUnitCopy" type="Label" parent="UnitPanel/HBox/InfoVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Click a structure, click a movable unit, or drag across the battlefield to inspect what is selected."
+theme_override_colors/font_color = Color(0.835, 0.78, 0.631, 1)
+theme_override_font_sizes/font_size = 12
+autowrap_mode = 3
+mouse_filter = 2
+
+[node name="BarsVBox" type="VBoxContainer" parent="UnitPanel/HBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(260, 0)
+theme_override_constants/separation = 8
+
+[node name="HpRow" type="VBoxContainer" parent="UnitPanel/HBox/BarsVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+visible = false
+theme_override_constants/separation = 3
+
+[node name="Heading" type="HBoxContainer" parent="UnitPanel/HBox/BarsVBox/HpRow"]
+layout_mode = 2
+mouse_filter = 2
+
+[node name="HpLabel" type="Label" parent="UnitPanel/HBox/BarsVBox/HpRow/Heading"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Hull Integrity"
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="HpValue" type="Label" parent="UnitPanel/HBox/BarsVBox/HpRow/Heading"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "HP: --"
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="HpBar" type="ProgressBar" parent="UnitPanel/HBox/BarsVBox/HpRow"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(0, 16)
+max_value = 1.0
+show_percentage = false
+
+[node name="SupRow" type="VBoxContainer" parent="UnitPanel/HBox/BarsVBox"]
+unique_name_in_owner = true
+layout_mode = 2
+visible = false
+theme_override_constants/separation = 3
+
+[node name="Heading" type="HBoxContainer" parent="UnitPanel/HBox/BarsVBox/SupRow"]
+layout_mode = 2
+mouse_filter = 2
+
+[node name="SupLabel" type="Label" parent="UnitPanel/HBox/BarsVBox/SupRow/Heading"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Supplies"
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="SupValue" type="Label" parent="UnitPanel/HBox/BarsVBox/SupRow/Heading"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Supplies: --"
+theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
+theme_override_font_sizes/font_size = 13
+mouse_filter = 2
+
+[node name="SupBar" type="ProgressBar" parent="UnitPanel/HBox/BarsVBox/SupRow"]
+unique_name_in_owner = true
+layout_mode = 2
+custom_minimum_size = Vector2(0, 16)
+max_value = 1.0
+show_percentage = false

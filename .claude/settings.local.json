@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:UserspowerDocumentsRTS -type f -name *.tres -o -name *.res -o -name *.gd)",
+      "Bash(find /c/Users/power/Documents/RTS/scenes -type f -name *.tscn)",
+      "Bash(wc -l \"/c/Users/power/Documents/RTS/scripts\"/*.gd)"
+    ]
+  }
+}
