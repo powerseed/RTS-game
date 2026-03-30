@@ -6,6 +6,12 @@ const TankScene := preload("res://scenes/tank.tscn")
 const TruckScene := preload("res://scenes/truck.tscn")
 const TankPlantScene := preload("res://scenes/tank_plant.tscn")
 const SupplyDepotScene := preload("res://scenes/supply_depot.tscn")
+const PATH_DIRS := [
+	Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
+	Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1),
+]
+const PATH_GOAL_EPS := 0.45
+const PATH_REPATH_S := 0.3
 
 @onready var cam2d: Camera2D = $Camera2D
 @onready var entities: Node2D = $Entities
@@ -202,11 +208,12 @@ func _on_tank_produced(plant: TankPlant) -> void:
 	Game.next_id += 1
 	tank.gx = clampf(plant.grid_col + plant.grid_w - 0.2, 0.8, Game.MAP_COLS - 0.8)
 	tank.gy = clampf(plant.grid_row + plant.grid_h - 0.18, 0.8, Game.MAP_ROWS - 0.8)
-	tank.destination = sp
 	tank.supplies = 100.0
 	tank.max_supplies = 100.0
 	tank.speed = 0.82 + randf() * 0.16
 	tank.heading = Vector2(1.0, 0.0)
+	if sp != null:
+		_set_move_goal(tank, sp, true)
 	entities.add_child(tank)
 	Game.unit_spawned.emit(tank)
 	hud.set_status("Tank produced from Plant #" + str(plant.entity_id) + ".")
@@ -295,19 +302,26 @@ func _issue_move(pos: Vector2) -> void:
 	if t == Vector2i(-1, -1):
 		hud.set_status("Move order is outside the battlefield."); return
 	var wt := Game.screen_to_grid(pos)
-	var tgt = Game.find_open(wt.x, wt.y)
+	var tgt = _find_ground_open_at(wt.x, wt.y, Game.TANK_COL_R)
 	if tgt == null:
-		hud.set_status("That move order is blocked."); return
+		hud.set_status("That move order is blocked by water or structures."); return
+	var ordered := 0
 	for i in sel.size():
 		var off := _formation_off(i, sel.size())
-		var rt = Game.find_open(tgt.x + off.x, tgt.y + off.y)
-		if rt == null: rt = tgt
-		sel[i].destination = rt
+		var rt = _find_ground_open_at(tgt.x + off.x, tgt.y + off.y, sel[i].get_collision_radius())
+		if rt == null:
+			rt = _find_ground_open_at(tgt.x, tgt.y, sel[i].get_collision_radius())
+		if rt == null:
+			continue
+		_set_move_goal(sel[i], rt, true)
 		if sel[i] is Truck:
 			sel[i].follow_target = null
+		ordered += 1
+	if ordered == 0:
+		hud.set_status("No safe ground target was found."); return
 	hud.set_status(
-		sel[0].label + " ordered to move." if sel.size() == 1
-		else str(sel.size()) + " units ordered to move.")
+		sel[0].label + " ordered to move." if ordered == 1
+		else str(ordered) + " units ordered to move.")
 
 func _formation_off(idx: int, cnt: int) -> Vector2:
 	if cnt <= 1: return Vector2.ZERO
@@ -326,16 +340,18 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 		hud.set_status("Supply order is outside the battlefield."); return
 	var sp = Game.find_open(depot.grid_col + depot.grid_w + 0.78,
 		depot.grid_row + depot.grid_h * 0.5 + ((randi() % 3) - 1) * 0.36)
+	if sp != null:
+		sp = _find_ground_open_at(sp.x, sp.y, Game.TRUCK_COL_R)
 	if sp == null:
 		hud.set_status("The Supply Depot exit is blocked."); return
 	var tgt_pt = null; var tgt_unit: Node2D = null; var tgt_lbl := ""
 	if tu != null and tu.movable and tu.faction == Game.PLAYER:
 		tgt_unit = tu
-		tgt_pt = Vector2(tu.gx, tu.gy)
+		tgt_pt = _find_ground_open_at(tu.gx, tu.gy, Game.TRUCK_COL_R)
 		tgt_lbl = tu.label + " #" + str(tu.entity_id)
 	else:
 		var wt := Game.screen_to_grid(pos)
-		tgt_pt = Game.find_open(wt.x, wt.y)
+		tgt_pt = _find_ground_open_at(wt.x, wt.y, Game.TRUCK_COL_R)
 	if tgt_pt == null:
 		hud.set_status("That supply route is blocked."); return
 	depot.stored -= Game.TRUCK_CARGO
@@ -345,17 +361,216 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 	Game.next_id += 1
 	truck.gx = sp.x
 	truck.gy = sp.y
-	truck.destination = tgt_pt
 	truck.follow_target = tgt_unit
 	truck.supplies = Game.TRUCK_CARGO
 	truck.max_supplies = Game.TRUCK_CARGO
 	truck.speed = Game.TRUCK_SPEED
 	truck.heading = Vector2(1.0, 0.0)
+	_set_move_goal(truck, tgt_pt, true)
 	entities.add_child(truck)
 	Game.unit_spawned.emit(truck)
 	hud.set_status(
 		"Supply truck dispatched to " + tgt_lbl + "." if tgt_unit != null
 		else "Supply truck dispatched with 500 supplies.")
+
+func _ground_clear_at_radius(wx: float, wy: float, radius: float) -> bool:
+	if wx < 0.0 or wy < 0.0 or wx >= Game.MAP_COLS or wy >= Game.MAP_ROWS:
+		return false
+	var probe := maxf(0.06, radius * 0.78)
+	var diag := probe * 0.71
+	var samples := [
+		Vector2(wx, wy),
+		Vector2(wx + probe, wy),
+		Vector2(wx - probe, wy),
+		Vector2(wx, wy + probe),
+		Vector2(wx, wy - probe),
+		Vector2(wx + diag, wy + diag),
+		Vector2(wx + diag, wy - diag),
+		Vector2(wx - diag, wy + diag),
+		Vector2(wx - diag, wy - diag),
+	]
+	for s in samples:
+		if not Game.passable(int(s.x), int(s.y)):
+			return false
+	return true
+
+func _find_ground_open_at(wx: float, wy: float, radius: float):
+	var pad := maxf(0.8, radius + 0.2)
+	var cx := clampf(wx, pad, Game.MAP_COLS - pad)
+	var cy := clampf(wy, pad, Game.MAP_ROWS - pad)
+	if _ground_clear_at_radius(cx, cy, radius):
+		return Vector2(cx, cy)
+	var sc := clampi(int(cx), 0, Game.MAP_COLS - 1)
+	var sr := clampi(int(cy), 0, Game.MAP_ROWS - 1)
+	for rad in range(1, 8):
+		for rr in range(sr - rad, sr + rad + 1):
+			for cc in range(sc - rad, sc + rad + 1):
+				if maxi(absi(cc - sc), absi(rr - sr)) != rad:
+					continue
+				var px := clampf(cc + 0.5, pad, Game.MAP_COLS - pad)
+				var py := clampf(rr + 0.5, pad, Game.MAP_ROWS - pad)
+				if _ground_clear_at_radius(px, py, radius):
+					return Vector2(px, py)
+	return null
+
+func _apply_ground_step(u: Unit, step: Vector2) -> float:
+	if step.length_squared() <= 0.0000001:
+		return 0.0
+	var full := Vector2(u.gx + step.x, u.gy + step.y)
+	if _ground_clear_at_radius(full.x, full.y, u.get_collision_radius()):
+		u.gx = full.x
+		u.gy = full.y
+		return step.length()
+	var can_x := absf(step.x) > 0.0001 and _ground_clear_at_radius(u.gx + step.x, u.gy, u.get_collision_radius())
+	var can_y := absf(step.y) > 0.0001 and _ground_clear_at_radius(u.gx, u.gy + step.y, u.get_collision_radius())
+	if can_x and can_y and u.destination != null:
+		var x_pos := Vector2(u.gx + step.x, u.gy)
+		var y_pos := Vector2(u.gx, u.gy + step.y)
+		if x_pos.distance_to(u.destination) <= y_pos.distance_to(u.destination):
+			u.gx = x_pos.x
+			return absf(step.x)
+		u.gy = y_pos.y
+		return absf(step.y)
+	if can_x:
+		u.gx += step.x
+		return absf(step.x)
+	if can_y:
+		u.gy += step.y
+		return absf(step.y)
+	return 0.0
+
+func _clear_move_goal(u: Unit) -> void:
+	u.destination = null
+	u.path.clear()
+	u.path_goal = null
+	u.next_repath_at = 0.0
+
+func _set_move_goal(u: Unit, target: Variant, force_repath: bool = false) -> bool:
+	if target == null:
+		_clear_move_goal(u)
+		return false
+	var target_pos: Vector2 = target
+	u.destination = target_pos
+	var changed: bool = force_repath or u.path_goal == null or u.path_goal.distance_to(target_pos) >= PATH_GOAL_EPS
+	if changed or (u.path.is_empty() and Game.elapsed >= u.next_repath_at):
+		var ok := _repath_unit(u)
+		u.next_repath_at = Game.elapsed + PATH_REPATH_S
+		return ok
+	return true
+
+func _repath_unit(u: Unit) -> bool:
+	u.path.clear()
+	if u.destination == null:
+		u.path_goal = null
+		return false
+	var route: Variant = _find_path_points(Vector2(u.gx, u.gy), u.destination, u.get_collision_radius())
+	u.path_goal = u.destination
+	if route == null:
+		return false
+	for p in route:
+		u.path.append(p)
+	return true
+
+func _find_path_points(start: Vector2, goal: Vector2, radius: float):
+	if start.distance_to(goal) <= 0.08:
+		return []
+	if _ground_segment_clear(start, goal, radius):
+		return [goal]
+	var start_cell := Vector2i(clampi(int(start.x), 0, Game.MAP_COLS - 1), clampi(int(start.y), 0, Game.MAP_ROWS - 1))
+	var goal_cell := Vector2i(clampi(int(goal.x), 0, Game.MAP_COLS - 1), clampi(int(goal.y), 0, Game.MAP_ROWS - 1))
+	var open: Array[Vector2i] = [start_cell]
+	var open_has := {}
+	open_has[start_cell] = true
+	var closed := {}
+	var came := {}
+	var g_cost := {}
+	g_cost[start_cell] = 0.0
+	var f_cost := {}
+	f_cost[start_cell] = _path_heuristic(start_cell, goal_cell)
+	while not open.is_empty():
+		var best_idx: int = 0
+		var current: Vector2i = open[0]
+		var best_f: float = f_cost.get(current, INF)
+		for i in range(1, open.size()):
+			var cand: Vector2i = open[i]
+			var cand_f: float = f_cost.get(cand, INF)
+			if cand_f < best_f:
+				best_idx = i
+				current = cand
+				best_f = cand_f
+		open.remove_at(best_idx)
+		open_has.erase(current)
+		if current == goal_cell:
+			return _reconstruct_path_points(came, current, start, goal, radius)
+		closed[current] = true
+		for dir: Vector2i in PATH_DIRS:
+			var nxt: Vector2i = current + dir
+			if closed.has(nxt):
+				continue
+			if not _path_tile_open(nxt.x, nxt.y, radius):
+				continue
+			if dir.x != 0 and dir.y != 0:
+				if not _path_tile_open(current.x + dir.x, current.y, radius):
+					continue
+				if not _path_tile_open(current.x, current.y + dir.y, radius):
+					continue
+			var step_cost := 1.41421356 if dir.x != 0 and dir.y != 0 else 1.0
+			var cand_g: float = g_cost.get(current, INF) + step_cost
+			if cand_g >= g_cost.get(nxt, INF):
+				continue
+			came[nxt] = current
+			g_cost[nxt] = cand_g
+			f_cost[nxt] = cand_g + _path_heuristic(nxt, goal_cell)
+			if not open_has.has(nxt):
+				open.append(nxt)
+				open_has[nxt] = true
+	return null
+
+func _reconstruct_path_points(came: Dictionary, current: Vector2i, start: Vector2, goal: Vector2, radius: float):
+	var cells: Array[Vector2i] = [current]
+	while came.has(current):
+		current = came[current]
+		cells.push_front(current)
+	var pts: Array[Vector2] = []
+	for i in range(1, cells.size()):
+		pts.append(Vector2(cells[i].x + 0.5, cells[i].y + 0.5))
+	if pts.is_empty() or pts[pts.size() - 1].distance_to(goal) > 0.05:
+		pts.append(goal)
+	return _simplify_path_points(start, pts, radius)
+
+func _simplify_path_points(start: Vector2, pts: Array[Vector2], radius: float) -> Array[Vector2]:
+	if pts.is_empty():
+		return pts
+	var out: Array[Vector2] = []
+	var anchor: Vector2 = start
+	var idx: int = 0
+	while idx < pts.size():
+		var furthest: int = idx
+		while furthest + 1 < pts.size() and _ground_segment_clear(anchor, pts[furthest + 1], radius):
+			furthest += 1
+		out.append(pts[furthest])
+		anchor = pts[furthest]
+		idx = furthest + 1
+	return out
+
+func _ground_segment_clear(a: Vector2, b: Vector2, radius: float) -> bool:
+	var len: float = a.distance_to(b)
+	if len <= 0.0001:
+		return _ground_clear_at_radius(b.x, b.y, radius)
+	var steps: int = maxi(1, ceili(len / 0.3))
+	for i in range(1, steps + 1):
+		var p: Vector2 = a.lerp(b, float(i) / float(steps))
+		if not _ground_clear_at_radius(p.x, p.y, radius):
+			return false
+	return true
+
+func _path_tile_open(c: int, r: int, radius: float) -> bool:
+	if c < 0 or r < 0 or c >= Game.MAP_COLS or r >= Game.MAP_ROWS:
+		return false
+	return _ground_clear_at_radius(c + 0.5, r + 0.5, radius)
+
+func _path_heuristic(a: Vector2i, b: Vector2i) -> float:
+	return absf(float(a.x - b.x)) + absf(float(a.y - b.y))
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  UNIT MOVEMENT
@@ -375,33 +590,57 @@ func _update_units(dt: float) -> void:
 				var fl := fd.length()
 				var off := u.get_collision_radius() + active_tu.get_collision_radius() + 0.18
 				var n := fd / fl if fl > 0.001 else Vector2(1, 0)
-				u.destination = Vector2(active_tu.gx + n.x * off, active_tu.gy + n.y * off)
+				_set_move_goal(u, _find_ground_open_at(
+					active_tu.gx + n.x * off,
+					active_tu.gy + n.y * off,
+					u.get_collision_radius()))
 			else:
 				u.follow_target = null
+				_clear_move_goal(u)
 		if u.destination == null:
 			if u is Truck: _truck_aura(u, dt)
 			continue
-		var dx: float = u.destination.x - u.gx
-		var dy: float = u.destination.y - u.gy
+		var move_target: Vector2 = u.path[0] if not u.path.is_empty() else u.destination
+		var dx: float = move_target.x - u.gx
+		var dy: float = move_target.y - u.gy
 		var dist := sqrt(dx * dx + dy * dy)
 		var arr_r := Game.TRUCK_ARRIVE_R if u is Truck else 0.06
 		if dist < arr_r:
+			if not u.path.is_empty():
+				u.path.remove_at(0)
+				if u.path.is_empty() and u.destination != null and Vector2(u.gx, u.gy).distance_to(u.destination) < arr_r + 0.04:
+					if u is Truck:
+						if active_tu == null:
+							_clear_move_goal(u)
+							u.follow_target = null
+					else:
+						_clear_move_goal(u)
+				if u is Truck: _truck_aura(u, dt)
+				continue
 			if u is Truck:
 				if active_tu == null:
-					u.destination = null; u.follow_target = null
+					_clear_move_goal(u); u.follow_target = null
 			else:
-				u.destination = null
+				_clear_move_goal(u)
 		else:
 			u.heading = Vector2(dx / dist, dy / dist)
 			var max_by_sup: float = dist if not u.consumes_supplies else u.supplies / Game.SUP_PER_UNIT
 			var hp_ratio: float = u.hp / u.max_hp if u.max_hp > 0 else 1.0
-			var travel := minf(dist, minf(u.speed * hp_ratio * dt, max_by_sup))
+			var terrain_speed_mul: float = Game.move_speed_mult_at(u.gx, u.gy)
+			var travel := minf(dist, minf(u.speed * hp_ratio * terrain_speed_mul * dt, max_by_sup))
 			if travel <= 0:
 				if u.consumes_supplies: u.supplies = 0.0
 				continue
-			u.gx += u.heading.x * travel; u.gy += u.heading.y * travel
+			var moved := _apply_ground_step(u, u.heading * travel)
+			if moved <= 0.0:
+				var repathed := _repath_unit(u)
+				u.next_repath_at = Game.elapsed + PATH_REPATH_S
+				if not repathed and active_tu == null:
+					_clear_move_goal(u)
+				if u is Truck: _truck_aura(u, dt)
+				continue
 			if u.consumes_supplies:
-				u.supplies = maxf(0.0, u.supplies - travel * Game.SUP_PER_UNIT)
+				u.supplies = maxf(0.0, u.supplies - moved * Game.SUP_PER_UNIT)
 		if u is Truck: _truck_aura(u, dt)
 
 func _truck_aura(truck: Truck, dt: float) -> void:
@@ -469,9 +708,12 @@ func _clamp_unit(u: Unit) -> void:
 	u.gy = clampf(u.gy, pad, Game.MAP_ROWS - pad)
 
 func _ensure_passable(u: Unit) -> void:
-	if Game.struct_at(int(u.gx), int(u.gy)) == null: return
-	var fb = Game.find_open(u.gx, u.gy)
-	if fb != null: u.gx = fb.x; u.gy = fb.y
+	if _ground_clear_at_radius(u.gx, u.gy, u.get_collision_radius()):
+		return
+	var fb = _find_ground_open_at(u.gx, u.gy, u.get_collision_radius())
+	if fb != null:
+		u.gx = fb.x
+		u.gy = fb.y
 
 func _sep(a: Unit, b: Unit) -> void:
 	var min_d := a.get_collision_radius() + b.get_collision_radius() + Game.COL_PAD
@@ -536,7 +778,8 @@ func _remove_dead() -> void:
 		# Clean up truck follow targets pointing to dead unit
 		for other: Unit in Game.get_units():
 			if other is Truck and other.follow_target == u:
-				other.follow_target = null; other.destination = null
+				other.follow_target = null
+				_clear_move_goal(other)
 		Game.unit_died.emit(u)
 		u.died.emit()
 		u.queue_free()
@@ -579,14 +822,14 @@ func _update_enemy_ai() -> void:
 		if u.faction != Game.ENEMY or not (u is Tank) or u.hp <= 0: continue
 		var tgt := _nearest_hostile(u, u.attack_range)
 		if tgt != null:
-			u.destination = Vector2(tgt.gx, tgt.gy)
+			_set_move_goal(u, Vector2(tgt.gx, tgt.gy))
 		else:
 			# Seek nearest player unit within a larger detection range
 			var seek := _nearest_hostile(u, Game.ENEMY_SEEK_R)
 			if seek != null:
-				u.destination = Vector2(seek.gx, seek.gy)
+				_set_move_goal(u, Vector2(seek.gx, seek.gy))
 			else:
-				u.destination = null
+				_clear_move_goal(u)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SPAWN

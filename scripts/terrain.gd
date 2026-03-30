@@ -37,6 +37,7 @@ func _bake_terrain() -> void:
 		for c in range(Game.MAP_COLS):
 			var tt: int = Game.get_tile(c, r)
 			var elev: int = Game.get_elev(c, r)
+			var elev_t: float = clampf(float(elev) / float(Game.MAX_HILL_ELEV), 0.0, 1.0)
 			var tc: Color
 			match tt:
 				Game.Tile.WATER:
@@ -47,28 +48,32 @@ func _bake_terrain() -> void:
 						tc = Color(0.180, 0.330, 0.460)
 					else:
 						tc = Color(0.200, 0.355, 0.480)
-				Game.Tile.SAND:
+				Game.Tile.SWAMP:
+					var nD := (Game.noise_d.get_noise_2d(c, r) + 1.0) * 0.5
+					if nD > 0.62:
+						tc = Color(0.305, 0.366, 0.222)
+					elif nD < 0.38:
+						tc = Color(0.242, 0.297, 0.173)
+					else:
+						tc = Color(0.274, 0.332, 0.198)
+				Game.Tile.FOREST:
+					var nD := (Game.noise_d.get_noise_2d(c, r) + 1.0) * 0.5
+					if elev == 1:
+						if nD > 0.52:
+							tc = Color(0.255, 0.470, 0.237)
+						else:
+							tc = Color(0.225, 0.430, 0.208)
+					else:
+						if nD > 0.52:
+							tc = Color(0.223, 0.412, 0.196)
+						else:
+							tc = Color(0.198, 0.370, 0.175)
+				Game.Tile.HILL:
 					var nD := (Game.noise_d.get_noise_2d(c, r) + 1.0) * 0.5
 					if nD > 0.55:
-						tc = Color(0.690, 0.640, 0.480)
+						tc = Color(0.512, 0.542, 0.297).lerp(Color(0.680, 0.710, 0.398), elev_t)
 					else:
-						tc = Color(0.660, 0.610, 0.450)
-				Game.Tile.DIRT:
-					var nD := (Game.noise_d.get_noise_2d(c, r) + 1.0) * 0.5
-					if nD > 0.5:
-						tc = Color(0.500, 0.420, 0.310)
-					else:
-						tc = Color(0.470, 0.395, 0.290)
-				Game.Tile.GRASS_LIGHT:
-					if elev == 1:
-						tc = Color(0.520, 0.680, 0.430)
-					else:
-						tc = Color(0.498, 0.659, 0.404)
-				Game.Tile.GRASS_DARK:
-					if elev == 1:
-						tc = Color(0.455, 0.600, 0.370)
-					else:
-						tc = Color(0.435, 0.580, 0.341)
+						tc = Color(0.470, 0.500, 0.274).lerp(Color(0.620, 0.652, 0.364), elev_t)
 				_:  # GRASS
 					if elev == 1:
 						tc = Color(0.490, 0.640, 0.400)
@@ -82,20 +87,32 @@ func _bake_decorations() -> void:
 	for r in range(Game.MAP_ROWS):
 		for c in range(Game.MAP_COLS):
 			var tt: int = Game.get_tile(c, r)
-			if tt == Game.Tile.WATER or tt == Game.Tile.SAND: continue
+			if tt == Game.Tile.WATER: continue
 			# Deterministic pseudo-random from coordinates
 			var h := (c * 73856093) ^ (r * 19349663)
 			var chance := (h % 1000) / 1000.0
 			var size_seed: int = (h >> 10) % 100
-			if tt == Game.Tile.GRASS or tt == Game.Tile.GRASS_LIGHT or tt == Game.Tile.GRASS_DARK:
-				if chance < 0.025:
+			if tt == Game.Tile.FOREST:
+				if chance < 0.235:
 					_decorations.append(Vector4i(c, r, DECO_TREE, size_seed))
-				elif chance < 0.035:
+				elif chance < 0.268:
 					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
-				elif chance < 0.042:
+				elif chance < 0.280:
 					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
-			elif tt == Game.Tile.DIRT:
-				if chance < 0.03:
+			elif tt == Game.Tile.SWAMP:
+				if chance < 0.086:
+					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
+				elif chance < 0.111:
+					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
+			elif tt == Game.Tile.HILL:
+				if chance < 0.062:
+					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
+				elif chance < 0.095:
+					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
+			else:
+				if chance < 0.017:
+					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
+				elif chance < 0.024:
 					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
 
 func _process(_dt: float) -> void:
@@ -177,21 +194,27 @@ func _draw_cliffs(sc: int, ec: int, sr: int, er: int) -> void:
 			var e := Game.get_elev(c, r)
 			if e == 0: continue
 			# South face: if tile below is lower
-			if r + 1 < Game.MAP_ROWS and Game.get_elev(c, r + 1) == 0:
-				var bl := Game.grid_to_world(c, r + 1)
-				var br := Game.grid_to_world(c + 1, r + 1)
-				var tl := Vector2(bl.x, bl.y - CLIFF_H)
-				var tr := Vector2(br.x, br.y - CLIFF_H)
-				_poly_fill([tl, tr, br, bl], cliff_south)
-				draw_line(tl, tr, cliff_line, 1.0)
+			if r + 1 < Game.MAP_ROWS:
+				var south_diff := e - Game.get_elev(c, r + 1)
+				if south_diff > 0:
+					var bl := Game.grid_to_world(c, r + 1)
+					var br := Game.grid_to_world(c + 1, r + 1)
+					var south_h := CLIFF_H * float(south_diff)
+					var tl := Vector2(bl.x, bl.y - south_h)
+					var tr := Vector2(br.x, br.y - south_h)
+					_poly_fill([tl, tr, br, bl], cliff_south)
+					draw_line(tl, tr, cliff_line, 1.0)
 			# East face: if tile to the right is lower
-			if c + 1 < Game.MAP_COLS and Game.get_elev(c + 1, r) == 0:
-				var tl := Game.grid_to_world(c + 1, r)
-				var bl := Game.grid_to_world(c + 1, r + 1)
-				var tr := Vector2(tl.x, tl.y - CLIFF_H)
-				var br := Vector2(bl.x, bl.y - CLIFF_H)
-				_poly_fill([tr, br, bl, tl], cliff_east)
-				draw_line(tr, br, cliff_line, 1.0)
+			if c + 1 < Game.MAP_COLS:
+				var east_diff := e - Game.get_elev(c + 1, r)
+				if east_diff > 0:
+					var tl := Game.grid_to_world(c + 1, r)
+					var bl := Game.grid_to_world(c + 1, r + 1)
+					var east_h := CLIFF_H * float(east_diff)
+					var tr := Vector2(tl.x, tl.y - east_h)
+					var br := Vector2(bl.x, bl.y - east_h)
+					_poly_fill([tr, br, bl, tl], cliff_east)
+					draw_line(tr, br, cliff_line, 1.0)
 
 # ── decorations ───────────────────────────────────────────────────────────────
 func _draw_decorations(sc: int, ec: int, sr: int, er: int) -> void:
@@ -203,7 +226,7 @@ func _draw_decorations(sc: int, ec: int, sr: int, er: int) -> void:
 		var cx: float = c + 0.5
 		var cy: float = r + 0.5
 		var elev: int = Game.get_elev(c, r)
-		var lift: float = CLIFF_H if elev == 1 else 0.0
+		var lift: float = CLIFF_H * float(elev)
 		match d.z:
 			DECO_TREE:
 				_draw_tree(cx, cy, sz, lift)

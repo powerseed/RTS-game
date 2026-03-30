@@ -9,6 +9,7 @@ var attack_damage: float = Game.ATK_DMG
 
 func _ready() -> void:
 	super._ready()
+	speed *= 2.0
 	if label.is_empty():
 		label = "Enemy Tank" if faction == Game.ENEMY else "Tank"
 

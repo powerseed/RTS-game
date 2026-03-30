@@ -12,6 +12,7 @@ const MAP_ROWS := 100
 const BASE_TILE_W := 78.0
 const BASE_TILE_H := 39.0
 const BASE_SLAB  := 28.0
+const MAX_HILL_ELEV := 3
 
 var camera: Camera2D  # Set by main.gd in _ready()
 
@@ -48,6 +49,7 @@ const TRUCK_RESUPPLY_S := 60.0
 const SUP_PER_UNIT     := 0.5
 const SUP_PER_SHOT     := 5.0
 const SUP_IDLE_RATE    := 0.3  # supply consumed per second while idle
+const SWAMP_SPEED_MUL  := 0.5
 const DRAG_THRESH      := 10.0
 const FORM_SPACE       := 0.92
 const TANK_COL_R       := 0.44
@@ -68,9 +70,7 @@ const ATK_CD           := 0.95
 const TRACER_TTL       := 0.16
 const DMG_BAR_S        := 1.35
 
-const INIT_ENEMIES := [
-	{"x": 17.5, "y": 48.5, "hx": -1.0, "hy": 0.1},
-]
+const INIT_ENEMIES := []
 
 # ── Mutable game state ───────────────────────────────────────────────────────
 var build_mode          := ""
@@ -92,15 +92,17 @@ var elapsed: float:
 	get: return Time.get_ticks_msec() / 1000.0
 
 # ── Terrain types ─────────────────────────────────────────────────────────────
-enum Tile { GRASS, GRASS_DARK, GRASS_LIGHT, DIRT, SAND, WATER, CLIFF }
+enum Tile { GRASS, WATER, SWAMP, FOREST, HILL, CLIFF }
 var tile_type: PackedByteArray   # per-tile terrain type (Tile enum)
-var tile_elev: PackedByteArray   # per-tile elevation (0 or 1)
+var tile_elev: PackedByteArray   # per-tile elevation (0..MAX_HILL_ELEV)
 
 # ── Noise (FastNoiseLite) ───────────────────────────────────────────────────
 var noise_a: FastNoiseLite
 var noise_b: FastNoiseLite
 var noise_c: FastNoiseLite  # elevation
 var noise_d: FastNoiseLite  # detail / decorations
+var noise_river: FastNoiseLite  # long meandering river paths
+var noise_biome: FastNoiseLite  # broad biome regions for forests and swamps
 
 # ── Fog of war (packed byte arrays, 0/1) ─────────────────────────────────────
 var fog_vis : PackedByteArray
@@ -124,6 +126,14 @@ func _ready() -> void:
 	noise_d.seed = 4
 	noise_d.noise_type = FastNoiseLite.TYPE_SIMPLEX
 	noise_d.frequency = 0.06
+	noise_river = FastNoiseLite.new()
+	noise_river.seed = 5
+	noise_river.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	noise_river.frequency = 0.022
+	noise_biome = FastNoiseLite.new()
+	noise_biome.seed = 6
+	noise_biome.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	noise_biome.frequency = 0.013
 	_bake_tile_data()
 	var sz := MAP_COLS * MAP_ROWS
 	fog_vis = PackedByteArray()
@@ -144,29 +154,53 @@ func _bake_tile_data() -> void:
 			var nB := (noise_b.get_noise_2d(c, r) + 1.0) * 0.5
 			var nC := (noise_c.get_noise_2d(c, r) + 1.0) * 0.5
 			var nD := (noise_d.get_noise_2d(c, r) + 1.0) * 0.5
+			var nE := (noise_biome.get_noise_2d(c, r) + 1.0) * 0.5
+			var nF := (noise_biome.get_noise_2d(c + 87.0, r - 53.0) + 1.0) * 0.5
+			var nG := (noise_biome.get_noise_2d(c - 91.0, r + 67.0) + 1.0) * 0.5
 			# Safe zone: keep spawn area clear of water/cliffs
 			var spawn_dx: float = c - 14.0
 			var spawn_dy: float = r - 49.0
 			var in_spawn: bool = (spawn_dx * spawn_dx + spawn_dy * spawn_dy) < 100.0  # radius 10
-			# Elevation: raised plateaus
-			var elev: int = 0 if in_spawn else (1 if nC > 0.62 else 0)
+			var ridge := clampf((nC - 0.54) * 1.9 + maxf(0.0, nA - 0.52) * 0.6, 0.0, 1.0)
+			var elev := 0
+			if not in_spawn and ridge > 0.24 and nB > 0.24:
+				var hill_mass := clampf((ridge - 0.24) / 0.76, 0.0, 1.0)
+				var peak_noise := (noise_c.get_noise_2d(c + 41.0, r - 37.0) + 1.0) * 0.5
+				var terrace_noise := (noise_a.get_noise_2d(c - 63.0, r + 28.0) + 1.0) * 0.5
+				elev = 1
+				if hill_mass > 0.42 and peak_noise > 0.44:
+					elev = 2
+				if hill_mass > 0.67 and peak_noise > 0.58 and terrace_noise > 0.46:
+					elev = 3
 			tile_elev[i] = elev
-			# Water: low areas in noise_b, but not on elevated terrain
-			if nB < 0.22 and elev == 0 and not in_spawn:
+
+			var river_south_center := _river_center_south(c)
+			var river_north_center := _river_center_north(c)
+			var river_dist := minf(absf(r - river_south_center), absf(r - river_north_center))
+			var river_width := 1.15 + maxf(0.0, nD - 0.45) * 1.05
+			var swamp_core := nE < 0.30 and nG > 0.46
+			var swamp_fringe := nE < 0.36 and nG > 0.58 and nB < 0.58
+			var swamp_region := not in_spawn and elev == 0 and (swamp_core or swamp_fringe)
+			var forest_region := not in_spawn and not swamp_region and elev == 0 and nF > 0.62 and nA > 0.46
+
+			if not in_spawn and elev == 0 and river_dist < river_width:
 				tile_type[i] = Tile.WATER
-			# Sand: shoreline around water
-			elif nB < 0.30 and elev == 0 and not in_spawn:
-				tile_type[i] = Tile.SAND
-			# Dirt: patches driven by combined noise
-			elif nD > 0.68 and nA < 0.55:
-				tile_type[i] = Tile.DIRT
-			# Grass variants
-			elif nA > 0.65:
-				tile_type[i] = Tile.GRASS_LIGHT
-			elif nA < 0.35:
-				tile_type[i] = Tile.GRASS_DARK
+			elif swamp_region:
+				tile_type[i] = Tile.SWAMP
+			elif forest_region:
+				tile_type[i] = Tile.FOREST
+			elif elev > 0:
+				tile_type[i] = Tile.HILL
 			else:
 				tile_type[i] = Tile.GRASS
+
+
+func _river_center_south(col: float) -> float:
+	return 64.0 + noise_river.get_noise_2d(col, 0.0) * 11.5 + noise_b.get_noise_2d(col * 0.6, 19.0) * 3.0
+
+
+func _river_center_north(col: float) -> float:
+	return 26.0 + noise_river.get_noise_2d(col, 91.0) * 7.5 + noise_a.get_noise_2d(col * 0.55, 47.0) * 2.5
 
 func get_tile(c: int, r: int) -> int:
 	if c < 0 or r < 0 or c >= MAP_COLS or r >= MAP_ROWS: return Tile.GRASS
@@ -178,6 +212,11 @@ func get_elev(c: int, r: int) -> int:
 
 func is_water(c: int, r: int) -> bool:
 	return get_tile(c, r) == Tile.WATER
+
+func move_speed_mult_at(wx: float, wy: float) -> float:
+	var c := clampi(int(wx), 0, MAP_COLS - 1)
+	var r := clampi(int(wy), 0, MAP_ROWS - 1)
+	return SWAMP_SPEED_MUL if get_tile(c, r) == Tile.SWAMP else 1.0
 
 # ── Coordinate helpers (Camera2D-based) ──────────────────────────────────────
 func grid_to_world(gx: float, gy: float, gz: float = 0.0) -> Vector2:
