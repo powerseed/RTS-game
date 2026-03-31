@@ -5,14 +5,19 @@ extends Control
 # ── Signals (connected by Main) ──────────────────────────────────────────────
 signal build_requested(btype: String)
 signal train_tank_requested
+signal unit_build_requested(unit_type: String, amount: int)
+signal tank_queue_pause_requested
+signal tank_queue_cancel_requested
 
 const MiniMapScript := preload("res://scripts/minimap.gd")
+const UnitIconScript := preload("res://scripts/unit_icon.gd")
 
 # ── element refs (scene-unique nodes from hud.tscn) ────────────────────────
 @onready var brand_panel: PanelContainer = %BrandPanel
 @onready var build_panel: PanelContainer = %BuildPanel
 @onready var sel_panel: PanelContainer = %SelPanel
 @onready var note_panel: PanelContainer = %NotePanel
+@onready var left_column: Control = $Left
 @onready var status_bar: PanelContainer = %StatusBar
 @onready var unit_panel: PanelContainer = %UnitPanel
 @onready var btn_plant: Button = %BtnPlant
@@ -41,6 +46,17 @@ var prod_label: Label
 var prod_error: Label
 var minimap_panel: PanelContainer
 var minimap_view: MiniMap
+var unit_catalog_panel: PanelContainer
+var unit_catalog_supply_label: Label
+var airport_icon_button: Button
+var tank_count_input: SpinBox
+var tank_count_line_edit: LineEdit
+var tank_build_button: Button
+var tank_pause_button: Button
+var tank_cancel_button: Button
+var tank_queue_bar: ProgressBar
+var tank_queue_count_label: Label
+var _tank_count_text_guard: bool = false
 
 # ── colours ──────────────────────────────────────────────────────────────────
 const C_PANEL   := Color(0.204, 0.137, 0.075, 0.80)
@@ -54,14 +70,22 @@ const C_HP_A    := Color(0.455, 0.776, 0.427)
 const C_HP_B    := Color(0.831, 0.851, 0.384)
 const C_SUP_A   := Color(0.839, 0.663, 0.259)
 const C_SUP_B   := Color(0.953, 0.867, 0.388)
+const C_PAUSE_BG := Color(0.867, 0.729, 0.255, 0.94)
+const C_PAUSE_BD := Color(0.992, 0.914, 0.620, 0.96)
+const C_PAUSE_TX := Color(0.212, 0.153, 0.082)
+const C_CANCEL_BG := Color(0.757, 0.255, 0.212, 0.94)
+const C_CANCEL_BD := Color(0.957, 0.675, 0.631, 0.96)
+const C_CANCEL_TX := Color(0.992, 0.957, 0.929)
+const UI_FONT_SCALE := 1.5
 const MINIMAP_SCREEN_W := 0.18
 const MINIMAP_GAP := 12.0
 const MINIMAP_EDGE := 24.0
-const MINIMAP_HEAD_H := 54.0
+const MINIMAP_HEAD_H := 72.0
 var _last_drag_sig := ""
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	left_column.visible = false
 	# apply styles to scene nodes
 	brand_panel.add_theme_stylebox_override("panel", _panel_style(22))
 	build_panel.add_theme_stylebox_override("panel", _panel_style())
@@ -82,10 +106,246 @@ func _ready() -> void:
 	hp_bar.add_theme_stylebox_override("fill", _bar_style(C_HP_A, C_HP_B))
 	sup_bar.add_theme_stylebox_override("background", _bar_bg_style())
 	sup_bar.add_theme_stylebox_override("fill", _bar_style(C_SUP_A, C_SUP_B))
+	_create_unit_catalog_panel()
 	_create_minimap_panel()
 	_create_prod_panel()
 	_layout_minimap_panel()
+	unit_panel.offset_top = -150.0
+	_scale_all_ui_fonts()
 	queue_redraw()
+
+func _scaled_font_size(base_size: int) -> int:
+	return maxi(1, int(round(float(base_size) * UI_FONT_SCALE)))
+
+func _scale_all_ui_fonts() -> void:
+	_scale_control_font_recursive(self)
+	if tank_queue_bar != null:
+		tank_queue_bar.custom_minimum_size.y = 32.0
+	if prod_progress != null:
+		prod_progress.custom_minimum_size.y = 18.0
+
+func _scale_control_font_recursive(node: Node) -> void:
+	if node is Label or node is Button or node is LineEdit or node is SpinBox:
+		var control := node as Control
+		var base_size := control.get_theme_font_size("font_size")
+		if base_size > 0:
+			control.add_theme_font_size_override("font_size", _scaled_font_size(base_size))
+	for child in node.get_children():
+		_scale_control_font_recursive(child)
+
+func _create_unit_catalog_panel() -> void:
+	unit_catalog_panel = PanelContainer.new()
+	unit_catalog_panel.add_theme_stylebox_override("panel", _panel_style(20))
+	unit_catalog_panel.layout_mode = 1
+	unit_catalog_panel.anchor_left = 0.0
+	unit_catalog_panel.anchor_top = 0.0
+	unit_catalog_panel.anchor_right = 0.0
+	unit_catalog_panel.anchor_bottom = 1.0
+	unit_catalog_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 10)
+	unit_catalog_panel.add_child(root)
+	var head := VBoxContainer.new()
+	head.add_theme_constant_override("separation", 4)
+	root.add_child(head)
+	var title := Label.new()
+	title.text = "Unit Factory"
+	title.add_theme_color_override("font_color", C_TEXT)
+	title.add_theme_font_size_override("font_size", 18)
+	head.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "Build units directly from the supply network."
+	subtitle.add_theme_color_override("font_color", C_MUTED)
+	subtitle.add_theme_font_size_override("font_size", 12)
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	head.add_child(subtitle)
+	unit_catalog_supply_label = Label.new()
+	unit_catalog_supply_label.text = "Supply Pool: 0"
+	unit_catalog_supply_label.add_theme_color_override("font_color", C_ACCENT)
+	unit_catalog_supply_label.add_theme_font_size_override("font_size", 13)
+	head.add_child(unit_catalog_supply_label)
+	root.add_child(_build_building_category())
+	root.add_child(_build_unit_category(
+		"Ground Vehicles",
+		"Tracked and wheeled combat units.",
+		true
+	))
+	root.add_child(_build_unit_category(
+		"Ground Troops",
+		"No units available yet.",
+		false
+	))
+	root.add_child(_build_unit_category(
+		"Aerial Units",
+		"No units available yet.",
+		false
+	))
+	add_child(unit_catalog_panel)
+
+func _build_building_category() -> Control:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _panel_style(14))
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	panel.add_child(vbox)
+	var title := Label.new()
+	title.text = "Building"
+	title.add_theme_color_override("font_color", C_TEXT)
+	title.add_theme_font_size_override("font_size", 15)
+	vbox.add_child(title)
+	var body := Label.new()
+	body.text = "Deployable structures and base infrastructure."
+	body.add_theme_color_override("font_color", C_MUTED)
+	body.add_theme_font_size_override("font_size", 12)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(body)
+	vbox.add_child(_build_airport_row())
+	return panel
+
+func _build_unit_category(title_text: String, body_text: String, include_tank: bool) -> Control:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _panel_style(14))
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	panel.add_child(vbox)
+	var title := Label.new()
+	title.text = title_text
+	title.add_theme_color_override("font_color", C_TEXT)
+	title.add_theme_font_size_override("font_size", 15)
+	vbox.add_child(title)
+	var body := Label.new()
+	body.text = body_text
+	body.add_theme_color_override("font_color", C_MUTED)
+	body.add_theme_font_size_override("font_size", 12)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(body)
+	if include_tank:
+		vbox.add_child(_build_tank_row())
+	return panel
+
+func _build_airport_row() -> Control:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	airport_icon_button = Button.new()
+	airport_icon_button.custom_minimum_size = Vector2(56, 56)
+	airport_icon_button.focus_mode = Control.FOCUS_NONE
+	airport_icon_button.text = ""
+	airport_icon_button.add_theme_stylebox_override("normal", _icon_btn_style())
+	airport_icon_button.add_theme_stylebox_override("hover", _icon_btn_style())
+	airport_icon_button.add_theme_stylebox_override("pressed", _icon_btn_style_armed())
+	airport_icon_button.add_theme_stylebox_override("focus", _icon_btn_style())
+	airport_icon_button.pressed.connect(_on_build_airport_pressed)
+	var icon_wrap := CenterContainer.new()
+	icon_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon_wrap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	airport_icon_button.add_child(icon_wrap)
+	var icon := UnitIconScript.new() as UnitIcon
+	icon.unit_type = Game.T_AIRPORT
+	icon.custom_minimum_size = Vector2(44, 44)
+	icon_wrap.add_child(icon)
+	row.add_child(airport_icon_button)
+	var name := Label.new()
+	name.text = "Airport"
+	name.custom_minimum_size = Vector2(108, 0)
+	name.add_theme_color_override("font_color", C_TEXT)
+	name.add_theme_font_size_override("font_size", 14)
+	row.add_child(name)
+	var build_time := Label.new()
+	build_time.text = "10 mins"
+	build_time.add_theme_color_override("font_color", C_ACCENT)
+	build_time.add_theme_font_size_override("font_size", 13)
+	row.add_child(build_time)
+	return row
+
+func _build_tank_row() -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 4)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	var icon := UnitIconScript.new() as UnitIcon
+	icon.unit_type = Game.T_TANK
+	row.add_child(icon)
+	var name := Label.new()
+	name.text = "Tank (1 min)"
+	name.custom_minimum_size = Vector2(108, 0)
+	name.add_theme_color_override("font_color", C_TEXT)
+	name.add_theme_font_size_override("font_size", 14)
+	row.add_child(name)
+	tank_count_input = SpinBox.new()
+	tank_count_input.min_value = 1
+	tank_count_input.max_value = 99999
+	tank_count_input.step = 1
+	tank_count_input.rounded = true
+	tank_count_input.value = 1
+	tank_count_input.custom_minimum_size = Vector2(72, 0)
+	tank_count_line_edit = tank_count_input.get_line_edit()
+	if tank_count_line_edit != null:
+		tank_count_line_edit.text = "1"
+		tank_count_line_edit.max_length = 5
+		tank_count_line_edit.text_changed.connect(_on_tank_count_text_changed)
+		tank_count_line_edit.focus_exited.connect(_normalize_tank_count_input)
+	row.add_child(tank_count_input)
+	tank_build_button = Button.new()
+	tank_build_button.text = "Build"
+	tank_build_button.focus_mode = Control.FOCUS_NONE
+	tank_build_button.add_theme_stylebox_override("normal", _btn_style())
+	tank_build_button.add_theme_stylebox_override("hover", _btn_style())
+	tank_build_button.add_theme_stylebox_override("pressed", _btn_style_armed())
+	tank_build_button.add_theme_stylebox_override("focus", _btn_style())
+	tank_build_button.add_theme_color_override("font_color", C_TEXT)
+	tank_build_button.add_theme_font_size_override("font_size", 13)
+	tank_build_button.pressed.connect(_on_build_tank_pressed)
+	row.add_child(tank_build_button)
+	tank_pause_button = Button.new()
+	tank_pause_button.text = "Pause"
+	tank_pause_button.focus_mode = Control.FOCUS_NONE
+	tank_pause_button.add_theme_stylebox_override("normal", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	tank_pause_button.add_theme_stylebox_override("hover", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	tank_pause_button.add_theme_stylebox_override("pressed", _btn_style_tinted(C_PAUSE_BD, C_PAUSE_BD))
+	tank_pause_button.add_theme_stylebox_override("focus", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	tank_pause_button.add_theme_color_override("font_color", C_PAUSE_TX)
+	tank_pause_button.add_theme_font_size_override("font_size", 13)
+	tank_pause_button.disabled = true
+	tank_pause_button.pressed.connect(_on_pause_tank_queue_pressed)
+	row.add_child(tank_pause_button)
+	tank_cancel_button = Button.new()
+	tank_cancel_button.text = "Cancel"
+	tank_cancel_button.focus_mode = Control.FOCUS_NONE
+	tank_cancel_button.add_theme_stylebox_override("normal", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	tank_cancel_button.add_theme_stylebox_override("hover", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	tank_cancel_button.add_theme_stylebox_override("pressed", _btn_style_tinted(C_CANCEL_BD, C_CANCEL_BD))
+	tank_cancel_button.add_theme_stylebox_override("focus", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	tank_cancel_button.add_theme_color_override("font_color", C_CANCEL_TX)
+	tank_cancel_button.add_theme_font_size_override("font_size", 13)
+	tank_cancel_button.disabled = true
+	tank_cancel_button.pressed.connect(_on_cancel_tank_queue_pressed)
+	row.add_child(tank_cancel_button)
+	wrap.add_child(row)
+	tank_queue_bar = ProgressBar.new()
+	tank_queue_bar.max_value = 1.0
+	tank_queue_bar.show_percentage = false
+	tank_queue_bar.value = 0.0
+	tank_queue_bar.custom_minimum_size = Vector2(0, 22)
+	tank_queue_bar.add_theme_stylebox_override("background", _bar_bg_style())
+	tank_queue_bar.add_theme_stylebox_override("fill", _bar_style(C_ACCENT, C_SUP_B))
+	wrap.add_child(tank_queue_bar)
+	tank_queue_count_label = Label.new()
+	tank_queue_count_label.text = ""
+	tank_queue_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tank_queue_count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	tank_queue_count_label.anchor_right = 1.0
+	tank_queue_count_label.anchor_bottom = 1.0
+	tank_queue_count_label.add_theme_color_override("font_color", Color(0.180, 0.125, 0.071))
+	tank_queue_count_label.add_theme_color_override("font_outline_color", C_TEXT)
+	tank_queue_count_label.add_theme_constant_override("outline_size", 2)
+	tank_queue_count_label.add_theme_font_size_override("font_size", 13)
+	tank_queue_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tank_queue_bar.add_child(tank_queue_count_label)
+	return wrap
 
 func _create_minimap_panel() -> void:
 	minimap_panel = PanelContainer.new()
@@ -140,6 +400,11 @@ func _layout_minimap_panel() -> void:
 	minimap_panel.offset_right = MINIMAP_EDGE + panel_w
 	minimap_panel.offset_bottom = -MINIMAP_EDGE
 	minimap_panel.offset_top = -(MINIMAP_EDGE + panel_h)
+	if unit_catalog_panel != null:
+		unit_catalog_panel.offset_left = MINIMAP_EDGE
+		unit_catalog_panel.offset_right = MINIMAP_EDGE + panel_w
+		unit_catalog_panel.offset_top = MINIMAP_EDGE
+		unit_catalog_panel.offset_bottom = -(MINIMAP_EDGE + panel_h + MINIMAP_GAP)
 	unit_panel.offset_left = MINIMAP_EDGE + panel_w + MINIMAP_GAP
 
 func _create_prod_panel() -> void:
@@ -229,12 +494,16 @@ func _draw() -> void:
 # ── screen-space drawing (CanvasLayer, not affected by Camera2D) ────────────
 func _draw_field_hud() -> void:
 	var vp := get_viewport_rect().size
-	draw_rect(Rect2(26, vp.y - 54, 780, 28), Color(0.047, 0.071, 0.047, 0.34))
-	draw_rect(Rect2(26, vp.y - 54, 780, 28), Color(1, 0.914, 0.663, 0.25), false, 1)
+	var font_size := _scaled_font_size(14)
+	var panel_h := 42.0
+	var panel_y := vp.y - 68.0
+	var panel_w := minf(vp.x - 52.0, 1180.0)
+	draw_rect(Rect2(26, panel_y, panel_w, panel_h), Color(0.047, 0.071, 0.047, 0.34))
+	draw_rect(Rect2(26, panel_y, panel_w, panel_h), Color(1, 0.914, 0.663, 0.25), false, 1)
 	var font := ThemeDB.fallback_font
-	draw_string(font, Vector2(40, vp.y - 36),
+	draw_string(font, Vector2(40, panel_y + 28.0),
 		"Combat: player tanks auto-fire on enemy tanks in range. Selected trucks show a resupply radius.",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.957, 0.831, 0.506))
+		HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.957, 0.831, 0.506))
 
 func _draw_sel_rect() -> void:
 	if not Game.drag_on or not Game.drag_box: return
@@ -297,11 +566,36 @@ func _btn_style() -> StyleBoxFlat:
 	s.content_margin_right = 16; s.content_margin_bottom = 12
 	return s
 
+func _icon_btn_style() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.071, 0.086, 0.098, 0.88)
+	s.border_color = Color(1.0, 0.906, 0.659, 0.20)
+	for side in ["left", "top", "right", "bottom"]:
+		s.set("border_width_" + side, 1)
+	s.corner_radius_top_left = 12; s.corner_radius_top_right = 12
+	s.corner_radius_bottom_left = 12; s.corner_radius_bottom_right = 12
+	s.content_margin_left = 4; s.content_margin_top = 4
+	s.content_margin_right = 4; s.content_margin_bottom = 4
+	return s
+
+func _icon_btn_style_armed() -> StyleBoxFlat:
+	var s := _icon_btn_style()
+	s.border_color = Color(1, 0.882, 0.573, 0.95)
+	s.shadow_color = Color(1, 0.882, 0.573, 0.35)
+	s.shadow_size = 1
+	return s
+
 func _btn_style_armed() -> StyleBoxFlat:
 	var s := _btn_style()
 	s.border_color = Color(1, 0.882, 0.573, 0.95)
 	s.shadow_color = Color(1, 0.882, 0.573, 0.5)
 	s.shadow_size = 1
+	return s
+
+func _btn_style_tinted(bg: Color, border: Color) -> StyleBoxFlat:
+	var s := _btn_style()
+	s.bg_color = bg
+	s.border_color = border
 	return s
 
 func _bar_style(col_a: Color, _col_b: Color) -> StyleBoxFlat:
@@ -330,11 +624,89 @@ func _on_plant() -> void:
 func _on_depot() -> void:
 	build_requested.emit(Game.T_DEPOT)
 
+func _on_build_airport_pressed() -> void:
+	build_requested.emit(Game.T_AIRPORT)
+
+func _on_tank_count_text_changed(new_text: String) -> void:
+	if _tank_count_text_guard:
+		return
+	var digits_only := _digits_only_text(new_text)
+	if digits_only.length() > 5:
+		digits_only = digits_only.substr(0, 5)
+	if digits_only != new_text and tank_count_line_edit != null:
+		_tank_count_text_guard = true
+		tank_count_line_edit.text = digits_only
+		_tank_count_text_guard = false
+	if digits_only.is_empty():
+		return
+	var next_value: int = clampi(int(digits_only), int(tank_count_input.min_value), int(tank_count_input.max_value))
+	_set_tank_count_value(next_value)
+
+func _normalize_tank_count_input() -> void:
+	if tank_count_input == null:
+		return
+	if tank_count_line_edit == null:
+		_set_tank_count_value(maxi(1, int(round(tank_count_input.value))))
+		return
+	var digits_only := _digits_only_text(tank_count_line_edit.text)
+	var next_value: int = 1 if digits_only.is_empty() else clampi(int(digits_only), int(tank_count_input.min_value), int(tank_count_input.max_value))
+	_set_tank_count_value(next_value)
+
+func _set_tank_count_value(value: int) -> void:
+	var clamped_value: int = clampi(value, int(tank_count_input.min_value), int(tank_count_input.max_value))
+	_tank_count_text_guard = true
+	tank_count_input.value = clamped_value
+	if tank_count_line_edit != null:
+		tank_count_line_edit.text = str(clamped_value)
+	_tank_count_text_guard = false
+
+func _digits_only_text(raw_text: String) -> String:
+	var digits_only := ""
+	for i in range(raw_text.length()):
+		var code: int = raw_text.unicode_at(i)
+		if code >= 48 and code <= 57:
+			digits_only += raw_text.substr(i, 1)
+	return digits_only
+
+func _on_build_tank_pressed() -> void:
+	_normalize_tank_count_input()
+	var amount: int = maxi(1, int(round(tank_count_input.value)))
+	unit_build_requested.emit(Game.T_TANK, amount)
+
+func _on_pause_tank_queue_pressed() -> void:
+	tank_queue_pause_requested.emit()
+
+func _on_cancel_tank_queue_pressed() -> void:
+	tank_queue_cancel_requested.emit()
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PUBLIC API (called from main.gd)
 # ═══════════════════════════════════════════════════════════════════════════════
 func set_status(msg: String) -> void:
 	lbl_status.text = msg
+
+func set_unit_catalog_supply(current: float) -> void:
+	if unit_catalog_supply_label != null:
+		unit_catalog_supply_label.text = "Supply Pool: " + str(roundi(current))
+
+func set_tank_queue_status(queue_count: int, progress: float, waiting_for_space: bool, paused: bool) -> void:
+	if tank_queue_bar == null or tank_queue_count_label == null:
+		return
+	if tank_pause_button != null:
+		tank_pause_button.disabled = queue_count <= 0
+		tank_pause_button.text = "Resume" if paused and queue_count > 0 else "Pause"
+	if tank_cancel_button != null:
+		tank_cancel_button.disabled = queue_count <= 0
+	if queue_count <= 0:
+		tank_queue_bar.value = 0.0
+		tank_queue_count_label.text = ""
+		return
+	if waiting_for_space and not paused:
+		tank_queue_bar.value = 1.0
+		tank_queue_count_label.text = str(queue_count)
+		return
+	tank_queue_bar.value = clampf(progress, 0.0, 1.0)
+	tank_queue_count_label.text = str(queue_count)
 
 func set_sel_pill(txt: String) -> void:
 	lbl_sel_pill.text = txt
@@ -353,8 +725,15 @@ func clear_prod_error() -> void:
 func sync_build_buttons() -> void:
 	var armed_plant: bool = Game.build_mode == Game.T_PLANT
 	var armed_depot: bool = Game.build_mode == Game.T_DEPOT
+	var armed_airport: bool = Game.build_mode == Game.T_AIRPORT
+	var airport_style: StyleBoxFlat = _icon_btn_style_armed() if armed_airport else _icon_btn_style()
 	btn_plant.add_theme_stylebox_override("normal", _btn_style_armed() if armed_plant else _btn_style())
 	btn_depot.add_theme_stylebox_override("normal", _btn_style_armed() if armed_depot else _btn_style())
+	if airport_icon_button != null:
+		airport_icon_button.add_theme_stylebox_override("normal", airport_style)
+		airport_icon_button.add_theme_stylebox_override("hover", airport_style)
+		airport_icon_button.add_theme_stylebox_override("focus", airport_style)
+		airport_icon_button.add_theme_stylebox_override("pressed", _icon_btn_style_armed())
 	var d := Game.bldg_def(Game.build_mode)
 	if not d.is_empty():
 		lbl_hint.text = "Click an open " + str(d.w) + "x" + str(d.h) + " footprint on the map to place the " + d.label + "."
@@ -416,6 +795,15 @@ func show_struct(s: Node2D) -> void:
 		sup_label.text = "Stored Supplies"
 		sup_value.text = "Supplies: " + str(roundi(s.stored)) + " / " + str(roundi(s.max_stored))
 		sup_bar.value = ratio
+	elif s is Airport:
+		prod_panel.visible = false
+		lbl_sel_pill.text = s.label
+		lbl_sel_detail.text = "Non-movable airfield structure. Placement uses the map build mode. Build time listed in the factory panel: 10 mins."
+		lbl_unit_pill.text = "Airport selected"
+		lbl_unit_name.text = "Airport #" + str(s.entity_id)
+		lbl_unit_copy.text = "Airfield structure reserved for future aerial unit production."
+		hp_row.visible = false
+		sup_row.visible = false
 
 func show_units(us: Array[Node2D]) -> void:
 	prod_panel.visible = false

@@ -4,13 +4,15 @@ extends Node2D
 
 const TankScene := preload("res://scenes/tank.tscn")
 const TruckScene := preload("res://scenes/truck.tscn")
-const TankPlantScene := preload("res://scenes/tank_plant.tscn")
 const SupplyDepotScene := preload("res://scenes/supply_depot.tscn")
+const AirportScene := preload("res://scenes/airport.tscn")
 const PATH_DIRS := [
 	Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1),
 ]
 const PATH_GOAL_EPS := 0.45
 const PATH_REPATH_S := 0.3
+const TANK_BUILD_COST := 500.0
+const TANK_BUILD_TIME := 60.0
 
 @onready var cam2d: Camera2D = $Camera2D
 @onready var entities: Node2D = $Entities
@@ -18,6 +20,12 @@ const PATH_REPATH_S := 0.3
 @onready var hud = $UILayer/HUD
 var _last_fog_sig := ""
 var _last_ui_sig := ""
+var _tank_build_queue: int = 0
+var _tank_build_time_left: float = 0.0
+var _tank_build_active: bool = false
+var _tank_build_paused: bool = false
+var _tank_build_waiting_spawn: bool = false
+var _tank_build_waiting_supply: bool = false
 
 func _ready() -> void:
 	Game.camera = cam2d
@@ -28,9 +36,13 @@ func _ready() -> void:
 	_spawn_starting_depot()
 	hud.build_requested.connect(toggle_build)
 	hud.train_tank_requested.connect(_on_train_tank)
+	hud.unit_build_requested.connect(_on_unit_build_requested)
+	hud.tank_queue_pause_requested.connect(_on_tank_queue_pause_requested)
+	hud.tank_queue_cancel_requested.connect(_on_tank_queue_cancel_requested)
 	hud.sync_build_buttons()
 	hud.reset_selection()
 	hud.reset_unit_panel()
+	hud.set_unit_catalog_supply(_player_supply_total())
 
 func _on_resize() -> void:
 	var sz := get_viewport_rect().size
@@ -51,13 +63,13 @@ func _process(dt: float) -> void:
 		Game.hover_tile = Game.tile_at(Game.ptr_scr.x, Game.ptr_scr.y)
 	elif Game.build_mode == "":
 		Game.hover_tile = Vector2i(-1, -1)
-	# Tank production handled by Timer nodes on TankPlant instances
 	_update_enemy_ai()
 	_update_units(dt)
 	_resolve_collisions()
 	_update_combat(dt)
 	_remove_dead()
 	_update_fog()
+	_update_player_production(dt)
 	_refresh_ui()
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -180,6 +192,11 @@ func _clamp_camera() -> void:
 #  BUILD
 # ═══════════════════════════════════════════════════════════════════════════════
 func toggle_build(btype: String) -> void:
+	if btype == Game.T_PLANT:
+		Game.build_mode = ""
+		hud.sync_build_buttons()
+		hud.set_status("Tank Plants are no longer buildable. Use the Unit Factory panel on the left.")
+		return
 	var armed := Game.build_mode == btype
 	Game.build_mode = "" if armed else btype
 	Game.selected_structure = null; Game.selected_units.clear()
@@ -200,13 +217,24 @@ func toggle_build(btype: String) -> void:
 func _attempt_place(c: int, r: int) -> void:
 	var d := Game.bldg_def(Game.build_mode)
 	if d.is_empty(): return
+	if Game.build_mode == Game.T_PLANT:
+		hud.set_status("Tank Plants are no longer buildable.")
+		Game.build_mode = ""
+		hud.sync_build_buttons()
+		return
 	if not Game.fp_valid(c, r, d.w, d.h):
 		hud.set_status("That footprint is blocked or off the map."); return
 	var structure: Structure
-	if Game.build_mode == Game.T_PLANT:
-		structure = TankPlantScene.instantiate()
-	else:
-		structure = SupplyDepotScene.instantiate()
+	match Game.build_mode:
+		Game.T_DEPOT:
+			structure = SupplyDepotScene.instantiate()
+		Game.T_AIRPORT:
+			structure = AirportScene.instantiate()
+		_:
+			hud.set_status("That structure is not available.")
+			Game.build_mode = ""
+			hud.sync_build_buttons()
+			return
 	structure.grid_col = c
 	structure.grid_row = r
 	structure.faction = Game.PLAYER
@@ -219,9 +247,10 @@ func _attempt_place(c: int, r: int) -> void:
 	Game.selected_structure = structure; Game.selected_units.clear()
 	Game.build_mode = ""; Game.hover_tile = Vector2i(-1, -1)
 	hud.sync_build_buttons()
-	hud.set_status(
-		"Tank Plant deployed. Click Build Tank to start production." if structure is TankPlant
-		else "Supply Depot deployed with 2000 stored supplies.")
+	if structure is SupplyDepot:
+		hud.set_status("Supply Depot deployed with 2000 stored supplies.")
+	elif structure is Airport:
+		hud.set_status("Airport placed. Build time listed as 10 mins.")
 	Game.structure_placed.emit(structure)
 
 func _on_tank_produced(plant: TankPlant) -> void:
@@ -243,41 +272,218 @@ func _on_tank_produced(plant: TankPlant) -> void:
 	hud.set_status("Tank produced from Plant #" + str(plant.entity_id) + ".")
 
 func _on_train_tank() -> void:
-	const RESOURCE_NAME := "Supply"
-	const DEPOT_NAME := "Supply Depot"
-	var ss = Game.selected_structure
-	if ss == null or not is_instance_valid(ss) or not (ss is TankPlant):
-		hud.set_status("Select a Tank Plant first.")
+	hud.set_status("Tank Plants are no longer used. Build tanks from the Unit Factory panel on the left.")
+
+func _on_unit_build_requested(unit_type: String, amount: int) -> void:
+	if amount <= 0:
+		hud.set_status("Enter a positive unit count.")
 		return
-	if ss.building:
-		hud.set_status("Tank Plant is already building.")
+	match unit_type:
+		Game.T_TANK:
+			_queue_tanks_from_supply_network(amount)
+		_:
+			hud.set_status("That unit is not available yet.")
+
+func _queue_tanks_from_supply_network(amount: int) -> void:
+	_tank_build_queue += amount
+	if _tank_build_paused:
+		hud.set_status("Queued %d tank%s. Production remains paused." % [amount, "" if amount == 1 else "s"])
 		return
-	var cost := 500.0  # total build cost; tank spawns fully supplied
-	# Centre of the Tank Plant in grid coords
-	var px: float = ss.grid_col + ss.grid_w * 0.5
-	var py: float = ss.grid_row + ss.grid_h * 0.5
-	# Find a nearby depot with enough supply
-	var depot: SupplyDepot = null
-	var any_nearby := false
-	for s: Structure in Game.get_structures():
-		if not (s is SupplyDepot) or s.faction != Game.PLAYER: continue
-		var dx := (s.grid_col + s.grid_w * 0.5) - px
-		var dy := (s.grid_row + s.grid_h * 0.5) - py
-		if sqrt(dx * dx + dy * dy) > Game.DEPOT_SUPPLY_R: continue
-		any_nearby = true
-		if s.stored >= cost:
-			depot = s
+	if not _tank_build_active:
+		if _start_next_tank_build():
+			hud.set_status("Queued %d tank%s for production." % [amount, "" if amount == 1 else "s"])
+			return
+		_tank_build_waiting_supply = true
+		_tank_build_waiting_spawn = false
+		_tank_build_time_left = 0.0
+		hud.set_status("Queued %d tank%s. Production is waiting for 500 supply." % [amount, "" if amount == 1 else "s"])
+		return
+	hud.set_status("Queued %d tank%s for production." % [amount, "" if amount == 1 else "s"])
+
+func _player_supply_total() -> float:
+	var total := 0.0
+	for s_node in Game.get_structures():
+		var depot: SupplyDepot = s_node as SupplyDepot
+		if depot == null or depot.faction != Game.PLAYER:
+			continue
+		total += depot.stored
+	return total
+
+func _deduct_player_supply(cost: float) -> bool:
+	var remaining := cost
+	for s_node in Game.get_structures():
+		var depot: SupplyDepot = s_node as SupplyDepot
+		if depot == null or depot.faction != Game.PLAYER or depot.stored <= 0.0:
+			continue
+		var take := minf(depot.stored, remaining)
+		depot.stored -= take
+		remaining -= take
+		if remaining <= 0.001:
+			return true
+	return false
+
+func _refund_player_supply(amount: float) -> float:
+	var remaining := amount
+	for s_node in Game.get_structures():
+		var depot: SupplyDepot = s_node as SupplyDepot
+		if depot == null or depot.faction != Game.PLAYER:
+			continue
+		var room := maxf(0.0, depot.max_stored - depot.stored)
+		if room <= 0.0:
+			continue
+		var refund := minf(room, remaining)
+		depot.stored += refund
+		remaining -= refund
+		if remaining <= 0.001:
 			break
-	if depot == null:
-		if not any_nearby:
-			hud.show_prod_error("No " + DEPOT_NAME + " nearby.")
-		else:
-			hud.show_prod_error("Insufficient " + RESOURCE_NAME + ".")
+	return amount - remaining
+
+func _start_next_tank_build() -> bool:
+	if _tank_build_queue <= 0 or _tank_build_active or _tank_build_paused:
+		return false
+	if _player_supply_total() + 0.001 < TANK_BUILD_COST:
+		return false
+	if not _deduct_player_supply(TANK_BUILD_COST):
+		return false
+	_tank_build_time_left = TANK_BUILD_TIME
+	_tank_build_active = true
+	_tank_build_waiting_spawn = false
+	_tank_build_waiting_supply = false
+	return true
+
+func _on_tank_queue_pause_requested() -> void:
+	if _tank_build_queue <= 0:
+		hud.set_status("No tank queue is active.")
 		return
-	hud.clear_prod_error()
-	depot.stored -= cost
-	ss.queue_tank()
-	hud.set_status("Tank production started at Plant #" + str(ss.entity_id) + ". " + str(roundi(cost)) + " " + RESOURCE_NAME + " deducted.")
+	_tank_build_paused = not _tank_build_paused
+	if _tank_build_paused:
+		hud.set_status("Tank queue paused.")
+		return
+	if not _tank_build_active and _start_next_tank_build():
+		hud.set_status("Tank queue resumed.")
+		return
+	if _tank_build_waiting_supply:
+		hud.set_status("Tank queue resumed. Waiting for 500 supply.")
+	elif _tank_build_waiting_spawn:
+		hud.set_status("Tank queue resumed. Waiting for a clear spawn point.")
+	else:
+		hud.set_status("Tank queue resumed.")
+
+func _on_tank_queue_cancel_requested() -> void:
+	if _tank_build_queue <= 0:
+		hud.set_status("No tank queue is active.")
+		return
+	var had_active_build: bool = _tank_build_active
+	var refunded := 0.0
+	if had_active_build:
+		refunded = _refund_player_supply(TANK_BUILD_COST)
+	_tank_build_queue = 0
+	_tank_build_time_left = 0.0
+	_tank_build_active = false
+	_tank_build_paused = false
+	_tank_build_waiting_spawn = false
+	_tank_build_waiting_supply = false
+	if had_active_build and refunded > 0.001:
+		hud.set_status("Tank queue cancelled. Refunded %d supply for the in-progress tank." % [roundi(refunded)])
+	else:
+		hud.set_status("Tank queue cancelled.")
+
+func _find_tank_spawn_info() -> Dictionary:
+	var best_depot: SupplyDepot = null
+	var best_spawn: Variant = null
+	var best_supply := -1.0
+	for s_node in Game.get_structures():
+		var depot: SupplyDepot = s_node as SupplyDepot
+		if depot == null or depot.faction != Game.PLAYER:
+			continue
+		var spawn: Variant = _find_tank_spawn_near_depot(depot)
+		if spawn == null:
+			continue
+		if depot.stored > best_supply:
+			best_supply = depot.stored
+			best_depot = depot
+			best_spawn = spawn
+	if best_depot == null or best_spawn == null:
+		return {}
+	return {"depot": best_depot, "spawn": best_spawn}
+
+func _find_tank_spawn_near_depot(depot: SupplyDepot):
+	var gx: float = depot.grid_col
+	var gy: float = depot.grid_row
+	var w: float = depot.grid_w
+	var h: float = depot.grid_h
+	var offsets := [
+		Vector2(gx + w + 0.9, gy + h * 0.5),
+		Vector2(gx - 0.9, gy + h * 0.5),
+		Vector2(gx + w * 0.5, gy - 0.9),
+		Vector2(gx + w * 0.5, gy + h + 0.9),
+		Vector2(gx + w + 0.9, gy - 0.1),
+		Vector2(gx + w + 0.9, gy + h + 0.1),
+		Vector2(gx - 0.9, gy - 0.1),
+		Vector2(gx - 0.9, gy + h + 0.1),
+	]
+	for offset in offsets:
+		var spawn: Variant = _find_ground_open_at(offset.x, offset.y, Game.TANK_COL_R)
+		if spawn != null:
+			return spawn
+	return null
+
+func _spawn_player_tank(spawn: Vector2, _depot: SupplyDepot) -> void:
+	var tank := TankScene.instantiate() as Tank
+	tank.faction = Game.PLAYER
+	tank.entity_id = Game.next_id
+	Game.next_id += 1
+	tank.gx = spawn.x
+	tank.gy = spawn.y
+	tank.supplies = 100.0
+	tank.max_supplies = 100.0
+	tank.speed = 0.82 + randf() * 0.16
+	tank.heading = Vector2(1.0, 0.0)
+	entities.add_child(tank)
+	Game.unit_spawned.emit(tank)
+
+func _update_player_production(dt: float) -> void:
+	if _tank_build_queue <= 0:
+		_tank_build_time_left = 0.0
+		_tank_build_active = false
+		_tank_build_paused = false
+		_tank_build_waiting_spawn = false
+		_tank_build_waiting_supply = false
+		return
+	if _tank_build_paused:
+		return
+	if not _tank_build_active:
+		var was_waiting_supply: bool = _tank_build_waiting_supply
+		if _start_next_tank_build():
+			if was_waiting_supply:
+				hud.set_status("Tank production resumed.")
+			return
+		if not _tank_build_waiting_supply:
+			_tank_build_waiting_supply = true
+			hud.set_status("Tank queue waiting for 500 supply.")
+		return
+	if _tank_build_time_left > 0.0:
+		_tank_build_time_left = maxf(0.0, _tank_build_time_left - dt)
+		if _tank_build_time_left > 0.0:
+			return
+	var spawn_ready: Dictionary = _find_tank_spawn_info()
+	if spawn_ready.is_empty():
+		_tank_build_waiting_spawn = true
+		return
+	_tank_build_waiting_spawn = false
+	_spawn_player_tank(spawn_ready["spawn"], spawn_ready["depot"])
+	_tank_build_queue -= 1
+	_tank_build_active = false
+	if _tank_build_queue <= 0:
+		_tank_build_time_left = 0.0
+		hud.set_status("Tank production complete.")
+		return
+	if _start_next_tank_build():
+		hud.set_status("Tank completed. %d tank%s remain in queue." % [_tank_build_queue, "" if _tank_build_queue == 1 else "s"])
+		return
+	_tank_build_time_left = 0.0
+	_tank_build_waiting_supply = true
+	hud.set_status("Tank completed. %d tank%s remain queued. Waiting for 500 supply." % [_tank_build_queue, "" if _tank_build_queue == 1 else "s"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SELECTION
@@ -967,6 +1173,8 @@ func _spawn_starting_depot() -> void:
 #  UI REFRESH
 # ═══════════════════════════════════════════════════════════════════════════════
 func _refresh_ui() -> void:
+	hud.set_unit_catalog_supply(_player_supply_total())
+	hud.set_tank_queue_status(_tank_build_queue, _tank_build_progress(), _tank_build_waiting_spawn, _tank_build_paused)
 	var ui_sig := _ui_signature()
 	if ui_sig == _last_ui_sig:
 		return
@@ -982,6 +1190,11 @@ func _refresh_ui() -> void:
 
 func _super_tank_cheat_applies(u: Unit) -> bool:
 	return Game.cheat_super_tanks and u is Tank and u.faction == Game.PLAYER
+
+func _tank_build_progress() -> float:
+	if _tank_build_queue <= 0 or TANK_BUILD_TIME <= 0.0 or not _tank_build_active:
+		return 0.0
+	return 1.0 - clampf(_tank_build_time_left / TANK_BUILD_TIME, 0.0, 1.0)
 
 func _ui_signature() -> String:
 	if Game.build_mode != "":

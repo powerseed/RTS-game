@@ -22,6 +22,7 @@ var camera: Camera2D  # Set by main.gd in _ready()
 # ── Building / unit type keys ────────────────────────────────────────────────
 const T_PLANT  := "tank_plant"
 const T_DEPOT  := "supply_depot"
+const T_AIRPORT := "airport"
 const T_TRUCK  := "supply_truck"
 const T_TANK   := "tank"
 
@@ -37,6 +38,10 @@ const BLDG := {
 	"supply_depot": {
 		"label": "Supply Depot", "w": 2, "h": 2,
 		"height_px": 64, "storage": 2000,
+	},
+	"airport": {
+		"label": "Airport", "w": 4, "h": 3,
+		"height_px": 54, "build_time_min": 10,
 	},
 }
 

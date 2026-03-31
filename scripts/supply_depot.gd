@@ -4,12 +4,20 @@ extends Structure
 
 var stored: float = 2000.0
 var max_stored: float = 2000.0
+var _last_storage_sig := ""
 
 func _ready() -> void:
 	super._ready()
 	label = "Supply Depot"
 	grid_w = 2
 	grid_h = 2
+
+func _process(dt: float) -> void:
+	super._process(dt)
+	var storage_sig := "%0.1f|%0.1f" % [stored, max_stored]
+	if storage_sig != _last_storage_sig:
+		_last_storage_sig = storage_sig
+		queue_redraw()
 
 func _draw() -> void:
 	draw_set_transform(-position, 0)  # draw in absolute world coordinates
@@ -44,6 +52,19 @@ func _draw() -> void:
 	# supplies bar
 	var ba := Game.grid_to_world(c + grid_w * 0.5, r + grid_h * 0.5, hp + 24)
 	_progress_bar(ba.x - 42, ba.y, 84, ratio)
+	var font := ThemeDB.fallback_font
+	var supply_text := "%d / %d" % [roundi(stored), roundi(max_stored)]
+	var font_size := 12
+	var text_size := font.get_string_size(supply_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	draw_string(
+		font,
+		Vector2(ba.x - text_size.x * 0.5, ba.y - 6.0),
+		supply_text,
+		HORIZONTAL_ALIGNMENT_LEFT,
+		-1,
+		font_size,
+		Color(0.973, 0.945, 0.871)
+	)
 	if sel:
 		_poly_stroke([pad.nw, pad.ne, pad.se, pad.sw],
 			Color(1, 0.902, 0.549, 0.6 + pulse * 0.25), 3)
