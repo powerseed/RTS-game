@@ -6,6 +6,8 @@ extends Control
 signal build_requested(btype: String)
 signal train_tank_requested
 
+const MiniMapScript := preload("res://scripts/minimap.gd")
+
 # ── element refs (scene-unique nodes from hud.tscn) ────────────────────────
 @onready var brand_panel: PanelContainer = %BrandPanel
 @onready var build_panel: PanelContainer = %BuildPanel
@@ -37,6 +39,8 @@ var btn_train_tank: Button
 var prod_progress: ProgressBar
 var prod_label: Label
 var prod_error: Label
+var minimap_panel: PanelContainer
+var minimap_view: MiniMap
 
 # ── colours ──────────────────────────────────────────────────────────────────
 const C_PANEL   := Color(0.204, 0.137, 0.075, 0.80)
@@ -50,6 +54,11 @@ const C_HP_A    := Color(0.455, 0.776, 0.427)
 const C_HP_B    := Color(0.831, 0.851, 0.384)
 const C_SUP_A   := Color(0.839, 0.663, 0.259)
 const C_SUP_B   := Color(0.953, 0.867, 0.388)
+const MINIMAP_SCREEN_W := 0.18
+const MINIMAP_GAP := 12.0
+const MINIMAP_EDGE := 24.0
+const MINIMAP_HEAD_H := 54.0
+var _last_drag_sig := ""
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -73,7 +82,65 @@ func _ready() -> void:
 	hp_bar.add_theme_stylebox_override("fill", _bar_style(C_HP_A, C_HP_B))
 	sup_bar.add_theme_stylebox_override("background", _bar_bg_style())
 	sup_bar.add_theme_stylebox_override("fill", _bar_style(C_SUP_A, C_SUP_B))
+	_create_minimap_panel()
 	_create_prod_panel()
+	_layout_minimap_panel()
+	queue_redraw()
+
+func _create_minimap_panel() -> void:
+	minimap_panel = PanelContainer.new()
+	minimap_panel.add_theme_stylebox_override("panel", _panel_style(20))
+	minimap_panel.layout_mode = 1
+	minimap_panel.anchor_left = 0.0
+	minimap_panel.anchor_top = 1.0
+	minimap_panel.anchor_right = 0.0
+	minimap_panel.anchor_bottom = 1.0
+	minimap_panel.offset_left = 0.0
+	minimap_panel.offset_top = 0.0
+	minimap_panel.offset_right = 0.0
+	minimap_panel.offset_bottom = 0.0
+	minimap_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	minimap_panel.add_child(vbox)
+	var head := HBoxContainer.new()
+	head.alignment = BoxContainer.ALIGNMENT_CENTER
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.add_child(head)
+	var title := Label.new()
+	title.text = "Mini Map"
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title.add_theme_color_override("font_color", C_TEXT)
+	title.add_theme_font_size_override("font_size", 16)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	head.add_child(title)
+	var pill := Label.new()
+	pill.text = "Live"
+	pill.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	pill.add_theme_color_override("font_color", C_ACCENT)
+	pill.add_theme_font_size_override("font_size", 13)
+	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	head.add_child(pill)
+	minimap_view = MiniMapScript.new()
+	minimap_view.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	minimap_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vbox.add_child(minimap_view)
+	add_child(minimap_panel)
+	_layout_minimap_panel()
+
+func _layout_minimap_panel() -> void:
+	if minimap_panel == null:
+		return
+	var vp: Vector2 = get_viewport_rect().size
+	var panel_w: float = vp.x * MINIMAP_SCREEN_W
+	var map_h: float = panel_w * float(Game.MAP_ROWS) / float(Game.MAP_COLS)
+	var panel_h: float = map_h + MINIMAP_HEAD_H
+	minimap_panel.offset_left = MINIMAP_EDGE
+	minimap_panel.offset_right = MINIMAP_EDGE + panel_w
+	minimap_panel.offset_bottom = -MINIMAP_EDGE
+	minimap_panel.offset_top = -(MINIMAP_EDGE + panel_h)
+	unit_panel.offset_left = MINIMAP_EDGE + panel_w + MINIMAP_GAP
 
 func _create_prod_panel() -> void:
 	prod_panel = PanelContainer.new()
@@ -133,7 +200,27 @@ func _create_prod_panel() -> void:
 	prod_panel.visible = false
 
 func _process(_dt: float) -> void:
-	queue_redraw()
+	if not Game.drag_on:
+		if _last_drag_sig != "":
+			_last_drag_sig = ""
+			queue_redraw()
+		return
+	var drag_sig := "%s|%s|%s|%s|%s|%s" % [
+		Game.drag_on,
+		Game.drag_box,
+		Game.drag_start.x,
+		Game.drag_start.y,
+		Game.drag_cur.x,
+		Game.drag_cur.y,
+	]
+	if drag_sig != _last_drag_sig:
+		_last_drag_sig = drag_sig
+		queue_redraw()
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_RESIZED:
+		_layout_minimap_panel()
+		queue_redraw()
 
 func _draw() -> void:
 	_draw_field_hud()

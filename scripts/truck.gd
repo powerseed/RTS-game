@@ -14,12 +14,14 @@ func get_collision_radius() -> float:
 	return Game.TRUCK_COL_R
 
 func get_lift() -> float:
-	return 12.0
+	return Game.surface_lift_at(gx, gy) + 12.0
 
 func _draw() -> void:
 	draw_set_transform(-position, 0)  # draw in absolute world coordinates
-	var sc := Game.grid_to_world(gx, gy, 12)
-	var fwd := Game.grid_to_world(gx + heading.x * 0.22, gy + heading.y * 0.22, 12)
+	var lift := get_lift()
+	var fwd_lift := Game.surface_lift_at(gx + heading.x * 0.22, gy + heading.y * 0.22) + 12.0
+	var sc := Game.grid_to_world(gx, gy, lift)
+	var fwd := Game.grid_to_world(gx + heading.x * 0.22, gy + heading.y * 0.22, fwd_lift)
 	var ang := atan2(fwd.y - sc.y, fwd.x - sc.x)
 	var sel := is_selected()
 	var cr: float = supplies / max_supplies if max_supplies > 0 else 0.0

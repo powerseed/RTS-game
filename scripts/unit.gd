@@ -13,6 +13,7 @@ var destination: Variant = null  # Vector2 or null
 var path: Array[Vector2] = []
 var path_goal: Variant = null  # Vector2 or null
 var next_repath_at: float = 0.0
+var blind_move: bool = false
 var hp: float = 100.0
 var max_hp: float = 100.0
 var supplies: float = 100.0
@@ -24,6 +25,7 @@ var speed: float = 0.9
 var heading := Vector2(1.0, 0.0)
 var movable: bool = true
 var status_display_until: float = 0.0
+var _last_visual_sig := ""
 
 func _ready() -> void:
 	add_to_group("units")
@@ -33,14 +35,26 @@ func _ready() -> void:
 		add_to_group("enemy_units")
 
 func _process(_dt: float) -> void:
-	position = Game.grid_to_world(gx, gy, 0)
-	queue_redraw()
+	position = Game.grid_to_world(gx, gy, Game.surface_lift_at(gx, gy))
+	var visual_sig := "%0.3f|%0.3f|%0.3f|%0.3f|%s|%0.1f|%0.1f|%s" % [
+		gx,
+		gy,
+		heading.x,
+		heading.y,
+		is_selected(),
+		hp,
+		supplies,
+		status_display_until > Game.elapsed,
+	]
+	if visual_sig != _last_visual_sig:
+		_last_visual_sig = visual_sig
+		queue_redraw()
 
 func get_collision_radius() -> float:
 	return Game.TANK_COL_R
 
 func get_lift() -> float:
-	return 15.0
+	return Game.surface_lift_at(gx, gy) + 15.0
 
 func is_selected() -> bool:
 	return self in Game.selected_units

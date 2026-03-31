@@ -1,87 +1,31 @@
-class_name Terrain
+class_name TerrainBand
 extends DrawHelpers
-## Renders per-tile isometric terrain with tablelands, cliffs, and ramps.
+## Draws a contiguous band of isometric terrain sums so Godot can cull strips cheaply.
 
-const TerrainBandScript := preload("res://scripts/terrain_band.gd")
-const SUMS_PER_BAND := 6
-
-var _decorations: Array[Vector4i] = []
 const DECO_TREE := 0
 const DECO_ROCK := 1
 const DECO_BUSH := 2
 
+var sum_start: int = 0
+var sum_end: int = 0
+var decorations: Array = []
+
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	z_index = -100
-	_bake_decorations()
-	_build_bands()
 	queue_redraw()
 
-func _build_bands() -> void:
-	for child in get_children():
-		child.queue_free()
-	var total_sums: int = Game.MAP_COLS + Game.MAP_ROWS - 1
-	var band_count: int = ceili(float(total_sums) / float(SUMS_PER_BAND))
-	var deco_bands: Array = []
-	for _i in range(band_count):
-		deco_bands.append([])
-	for d in _decorations:
-		var band_idx: int = int((d.x + d.y) / SUMS_PER_BAND)
-		deco_bands[band_idx].append(d)
-	for band_idx in range(band_count):
-		var band := TerrainBandScript.new()
-		band.sum_start = band_idx * SUMS_PER_BAND
-		band.sum_end = min((band_idx + 1) * SUMS_PER_BAND - 1, total_sums - 1)
-		band.decorations = deco_bands[band_idx]
-		band.z_index = band_idx + 1
-		add_child(band)
-
-func _bake_decorations() -> void:
-	_decorations.clear()
-	for r in range(Game.MAP_ROWS):
-		for c in range(Game.MAP_COLS):
-			var tt: int = Game.get_tile(c, r)
-			if tt == Game.Tile.WATER or tt == Game.Tile.BRIDGE:
-				continue
-			var h := (c * 73856093) ^ (r * 19349663)
-			var chance := (h % 1000) / 1000.0
-			var size_seed: int = (h >> 10) % 100
-			if tt == Game.Tile.FOREST:
-				if chance < 0.235:
-					_decorations.append(Vector4i(c, r, DECO_TREE, size_seed))
-				elif chance < 0.268:
-					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
-				elif chance < 0.280:
-					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
-			elif tt == Game.Tile.SWAMP:
-				if chance < 0.086:
-					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
-				elif chance < 0.111:
-					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
-			elif tt == Game.Tile.HILL:
-				if Game.get_ramp(c, r) == Game.Ramp.NONE:
-					if chance < 0.050:
-						_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
-					elif chance < 0.078:
-						_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
-			else:
-				if chance < 0.017:
-					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
-				elif chance < 0.024:
-					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
-
 func _draw() -> void:
-	var map_shadow := [
-		Game.grid_to_world(0, 0),
-		Game.grid_to_world(Game.MAP_COLS, 0),
-		Game.grid_to_world(Game.MAP_COLS, Game.MAP_ROWS),
-		Game.grid_to_world(0, Game.MAP_ROWS),
-	]
-	_poly_fill(_off_pts(map_shadow, 0, Game.BASE_SLAB + 28), Color(0.067, 0.102, 0.063, 0.18))
+	for sum in range(sum_start, sum_end + 1):
+		for r in range(Game.MAP_ROWS):
+			var c := sum - r
+			if c < 0 or c >= Game.MAP_COLS:
+				continue
+			_draw_tile(c, r)
+		_draw_decorations_for_sum(sum)
 
 func _draw_tile(c: int, r: int) -> void:
 	var tt: int = Game.get_tile(c, r)
-	var top := _tile_top(c, r)
+	var top := Game.tile_top_poly(c, r)
 	var tc := _tile_color(c, r, tt)
 	_draw_south_face(c, r, top, tt)
 	_draw_east_face(c, r, top, tt)
@@ -152,9 +96,6 @@ func _draw_ramp_mark(c: int, r: int, top: PackedVector2Array) -> void:
 			high_center = (top[1] + top[2]) * 0.5
 	draw_line(low_center, high_center, Color(1.0, 0.925, 0.702, 0.55), 2.0)
 
-func _tile_top(c: int, r: int) -> PackedVector2Array:
-	return Game.tile_top_poly(c, r)
-
 func _tile_color(c: int, r: int, tt: int) -> Color:
 	var elev_t: float = clampf(float(Game.get_elev(c, r)) / float(Game.MAX_HILL_ELEV), 0.0, 1.0)
 	match tt:
@@ -218,8 +159,11 @@ func _east_face_color(tt: int) -> Color:
 		_:
 			return Color(0.278, 0.318, 0.212)
 
-func _draw_decorations() -> void:
-	for d in _decorations:
+func _draw_decorations_for_sum(sum: int) -> void:
+	for item in decorations:
+		var d: Vector4i = item
+		if d.x + d.y != sum:
+			continue
 		var c: int = d.x
 		var r: int = d.y
 		var sz: float = 0.7 + (d.w % 50) / 100.0
