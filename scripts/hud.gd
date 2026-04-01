@@ -742,13 +742,13 @@ func sync_build_buttons() -> void:
 
 func reset_selection() -> void:
 	lbl_sel_pill.text = "Nothing selected"
-	lbl_sel_detail.text = "Choose a structure from the build menu, click a structure, or drag-select movable units to command them."
+	lbl_sel_detail.text = "Choose a structure from the build menu, click a structure, or drag-select movable units to command them. Right-click moves. Ctrl+Right-click force-attacks ground."
 	prod_panel.visible = false
 
 func reset_unit_panel() -> void:
 	lbl_unit_pill.text = "No selection"
 	lbl_unit_name.text = "Nothing selected"
-	lbl_unit_copy.text = "Click a structure, click a movable unit, or drag across the battlefield to inspect what is selected."
+	lbl_unit_copy.text = "Click a structure, click a movable unit, or drag across the battlefield to inspect what is selected. Tanks can force-attack ground with Ctrl+Right-click."
 	hp_row.visible = false
 	sup_row.visible = false
 	prod_panel.visible = false
@@ -815,7 +815,7 @@ func show_units(us: Array[Node2D]) -> void:
 		var sp: String = "Load: " if is_truck else "Supplies: "
 		var uc: String = "Mobile logistics vehicle. Its supplies bar shows cargo only." if is_truck else "Armored vehicle. Supplies consumed as it moves. Auto-fires on enemies."
 		lbl_sel_pill.text = ul + " #" + str(u.entity_id)
-		lbl_sel_detail.text = "Movable unit selected. Right-click the map to move it."
+		lbl_sel_detail.text = "Movable unit selected. Right-click the map to move it. Ctrl+Right-click force-attacks ground."
 		lbl_unit_pill.text = ul + " selected"
 		lbl_unit_name.text = ul + " #" + str(u.entity_id)
 		lbl_unit_copy.text = uc
@@ -840,7 +840,7 @@ func show_units(us: Array[Node2D]) -> void:
 	if tc == us.size(): label = str(us.size()) + " Tanks"
 	elif trc == us.size(): label = str(us.size()) + " Trucks"
 	lbl_sel_pill.text = label
-	lbl_sel_detail.text = "Movable units selected. Right-click to move the group."
+	lbl_sel_detail.text = "Movable units selected. Right-click moves the group. Ctrl+Right-click force-attacks ground."
 	lbl_unit_pill.text = str(us.size()) + " selected"
 	lbl_unit_name.text = label
 	lbl_unit_copy.text = "Group status shown as combined totals."

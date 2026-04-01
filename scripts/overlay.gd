@@ -65,10 +65,11 @@ func _update_shells(dt: float) -> void:
 	while i >= 0:
 		var shell: Dictionary = shells[i]
 		var target: Variant = shell.get("target", null)
-		var target_unit := target as Unit
+		var target_unit: Unit = target as Unit
 		if target_unit != null and is_instance_valid(target_unit) and target_unit.hp > 0:
 			shell["tx"] = target_unit.gx
 			shell["ty"] = target_unit.gy
+			shell["tz_lift"] = target_unit.get_lift()
 		var shell_pos := Vector2(float(shell.get("cx", 0.0)), float(shell.get("cy", 0.0)))
 		var target_pos := Vector2(float(shell.get("tx", 0.0)), float(shell.get("ty", 0.0)))
 		var delta := target_pos - shell_pos
@@ -109,9 +110,20 @@ func _draw_shells() -> void:
 		var target_pos := Vector2(float(shell.get("tx", 0.0)), float(shell.get("ty", 0.0)))
 		var total_len := maxf(origin.distance_to(target_pos), 0.001)
 		var travel_t := clampf(origin.distance_to(shell_pos) / total_len, 0.0, 1.0)
-		var arc_lift := sin(travel_t * PI) * 12.0 + 15.0
-		var sc := Game.grid_to_world(shell_pos.x, shell_pos.y, arc_lift)
-		var shadow := Game.grid_to_world(shell_pos.x, shell_pos.y, 2.0)
+		var start_lift: float = float(shell.get("sz_lift", Game.surface_lift_at(origin.x, origin.y) + 19.0))
+		var end_lift: float = float(shell.get("tz_lift", Game.surface_lift_at(target_pos.x, target_pos.y) + 4.0))
+		var ground_lift: float = Game.surface_lift_at(shell_pos.x, shell_pos.y)
+		var arc_peak: float = clampf(
+			Game.SHELL_ARC_BASE +
+			total_len * Game.SHELL_ARC_PER_UNIT +
+			maxf(0.0, start_lift - end_lift) * Game.SHELL_ARC_ELEV_BIAS,
+			12.0,
+			38.0
+		)
+		var arc_t: float = 4.0 * travel_t * (1.0 - travel_t)
+		var shell_lift: float = lerpf(start_lift, end_lift, travel_t) + arc_peak * arc_t
+		var sc := Game.grid_to_world(shell_pos.x, shell_pos.y, shell_lift)
+		var shadow := Game.grid_to_world(shell_pos.x, shell_pos.y, ground_lift + 2.0)
 		var shell_fill := Color(0.149, 0.137, 0.122)
 		var faction := String(shell.get("faction", Game.PLAYER))
 		var shell_hi := Color(0.859, 0.741, 0.545, 0.8) if faction == Game.PLAYER else Color(0.878, 0.553, 0.475, 0.8)

@@ -5,11 +5,13 @@ extends Node
 signal unit_spawned(unit: Node2D)
 signal unit_died(unit: Node2D)
 signal structure_placed(structure: Node2D)
+signal terrain_changed
 
 # ── Map ──────────────────────────────────────────────────────────────────────
 const MAP_COLS := 120
 const MAP_ROWS := 100
 const MAP_SEED := 20260330
+const ELEV_METERS_PER_LEVEL := 10.0
 const BASE_TILE_W := 78.0
 const BASE_TILE_H := 39.0
 const BASE_SLAB  := 28.0
@@ -69,14 +71,19 @@ const COL_ITERS        := 3
 const VIS_STRUCT       := 8.5
 const VIS_UNIT         := 5.5
 const VIS_TRUCK        := 4.4
+const VIS_OBSERVER_HEIGHT_M := 1.7
 const VIS_FALLBACK     := 9.0
 
-const ATK_RANGE        := 4.8
+const ATK_RANGE        := 9.6
 const ENEMY_SEEK_R     := 12.0
 const ATK_DMG          := 20.0
+const BRIDGE_HP        := ATK_DMG * 3.0
 const ATK_CD           := 0.95
 const SHELL_SPEED      := 11.5
 const SHELL_HIT_R      := 0.18
+const SHELL_ARC_BASE   := 10.0
+const SHELL_ARC_PER_UNIT := 2.1
+const SHELL_ARC_ELEV_BIAS := 0.18
 const EXPLOSION_TTL    := 0.34
 const DMG_BAR_S        := 1.35
 const SUPER_TANK_SPEED_MUL := 10.0
@@ -113,6 +120,7 @@ enum Corner { NW, NE, SE, SW }
 var tile_type: PackedByteArray   # per-tile terrain type (Tile enum)
 var tile_elev: PackedByteArray   # per-tile elevation (0..MAX_HILL_ELEV)
 var tile_ramp: PackedByteArray   # per-tile ramp direction (Ramp enum)
+var bridge_hp: PackedFloat32Array
 
 # ── Noise (FastNoiseLite) ───────────────────────────────────────────────────
 var noise_a: FastNoiseLite
@@ -176,6 +184,9 @@ func _bake_tile_data() -> void:
 	tile_ramp = PackedByteArray()
 	tile_ramp.resize(sz)
 	tile_ramp.fill(Ramp.NONE)
+	bridge_hp = PackedFloat32Array()
+	bridge_hp.resize(sz)
+	bridge_hp.fill(0.0)
 	var blocked := PackedByteArray()
 	blocked.resize(sz)
 	blocked.fill(0)
@@ -289,6 +300,7 @@ func _try_place_bridge_at(col: int, is_north: bool, force_shores: bool) -> bool:
 		tile_type[i] = Tile.BRIDGE
 		tile_elev[i] = 0
 		tile_ramp[i] = Ramp.NONE
+		bridge_hp[i] = BRIDGE_HP
 	return true
 
 func _find_bridge_span(col: int, is_north: bool) -> Vector2i:
@@ -729,6 +741,28 @@ func get_ramp(c: int, r: int) -> int:
 
 func is_water(c: int, r: int) -> bool:
 	return get_tile(c, r) == Tile.WATER
+
+func bridge_tile_at(c: int, r: int) -> bool:
+	return get_tile(c, r) == Tile.BRIDGE
+
+func get_bridge_hp(c: int, r: int) -> float:
+	if c < 0 or r < 0 or c >= MAP_COLS or r >= MAP_ROWS:
+		return 0.0
+	return bridge_hp[r * MAP_COLS + c]
+
+func damage_bridge(c: int, r: int, damage: float) -> bool:
+	if not bridge_tile_at(c, r) or damage <= 0.0:
+		return false
+	var i := r * MAP_COLS + c
+	bridge_hp[i] = maxf(0.0, bridge_hp[i] - damage)
+	if bridge_hp[i] > 0.0:
+		return false
+	tile_type[i] = Tile.WATER
+	tile_elev[i] = 0
+	tile_ramp[i] = Ramp.NONE
+	bridge_hp[i] = 0.0
+	emit_signal("terrain_changed")
+	return true
 
 func move_speed_mult_at(wx: float, wy: float) -> float:
 	var c := clampi(int(wx), 0, MAP_COLS - 1)

@@ -90,7 +90,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 				for u: Unit in Game.get_units():
 					if _super_tank_cheat_applies(u):
 						u.supplies = u.max_supplies
-				hud.set_status("Super tank cheat enabled. Player tanks now move 10x faster and use no supplies.")
+				_flush_instant_tank_production()
+				hud.set_status("Super tank cheat enabled. Player tanks now move 10x faster, use no supplies, and unit production is instant.")
 			else:
 				hud.set_status("Super tank cheat is already active.")
 			return
@@ -107,7 +108,10 @@ func _unhandled_input(ev: InputEvent) -> void:
 		Game.ptr_in = true
 		Game.hover_tile = Game.tile_at(ev.position.x, ev.position.y) if Game.build_mode != "" else Vector2i(-1, -1)
 		if ev.button_index == MOUSE_BUTTON_RIGHT and ev.pressed:
-			_issue_move(ev.position)
+			if ev.ctrl_pressed:
+				_issue_force_attack(ev.position)
+			else:
+				_issue_move(ev.position)
 		elif ev.button_index == MOUSE_BUTTON_LEFT:
 			if ev.pressed:
 				_on_lmb_down(ev.position)
@@ -286,6 +290,17 @@ func _on_unit_build_requested(unit_type: String, amount: int) -> void:
 
 func _queue_tanks_from_supply_network(amount: int) -> void:
 	_tank_build_queue += amount
+	if _instant_unit_production_active():
+		_flush_instant_tank_production()
+		if _tank_build_queue <= 0:
+			hud.set_status("Queued %d tank%s. Production completed instantly." % [amount, "" if amount == 1 else "s"])
+			return
+		if _tank_build_waiting_supply:
+			hud.set_status("Queued %d tank%s. Instant production is waiting for 500 supply." % [amount, "" if amount == 1 else "s"])
+			return
+		if _tank_build_waiting_spawn:
+			hud.set_status("Queued %d tank%s. Instant production is waiting for a clear spawn point." % [amount, "" if amount == 1 else "s"])
+			return
 	if _tank_build_paused:
 		hud.set_status("Queued %d tank%s. Production remains paused." % [amount, "" if amount == 1 else "s"])
 		return
@@ -345,7 +360,7 @@ func _start_next_tank_build() -> bool:
 		return false
 	if not _deduct_player_supply(TANK_BUILD_COST):
 		return false
-	_tank_build_time_left = TANK_BUILD_TIME
+	_tank_build_time_left = _effective_tank_build_time()
 	_tank_build_active = true
 	_tank_build_waiting_spawn = false
 	_tank_build_waiting_supply = false
@@ -450,6 +465,9 @@ func _update_player_production(dt: float) -> void:
 		_tank_build_waiting_spawn = false
 		_tank_build_waiting_supply = false
 		return
+	if _instant_unit_production_active():
+		_flush_instant_tank_production()
+		return
 	if _tank_build_paused:
 		return
 	if not _tank_build_active:
@@ -528,6 +546,10 @@ func _issue_move(pos: Vector2) -> void:
 		_dispatch_truck(ss, pos); return
 	var sel: Array = Game.get_selected_units().filter(func(u): return u.movable)
 	if sel.is_empty(): return
+	var target_unit := Game.unit_at_screen(pos.x, pos.y) as Unit
+	if target_unit != null and target_unit.faction != Game.PLAYER:
+		_issue_attack_order(target_unit, sel)
+		return
 	var t := Game.tile_at(pos.x, pos.y)
 	if t == Vector2i(-1, -1):
 		hud.set_status("Move order is outside the battlefield."); return
@@ -544,6 +566,7 @@ func _issue_move(pos: Vector2) -> void:
 		if rt == null:
 			continue
 		var unit_blind_order: bool = blind_order or not Game.fexp(clampi(int(rt.x), 0, Game.MAP_COLS - 1), clampi(int(rt.y), 0, Game.MAP_ROWS - 1))
+		_clear_attack_goal(sel[i])
 		_set_move_goal(sel[i], rt, true, unit_blind_order)
 		if sel[i] is Truck:
 			sel[i].follow_target = null
@@ -553,6 +576,62 @@ func _issue_move(pos: Vector2) -> void:
 	hud.set_status(
 		sel[0].label + " ordered to move." if ordered == 1
 		else str(ordered) + " units ordered to move.")
+
+func _issue_attack_order(target_unit: Unit, sel: Array) -> void:
+	var ordered := 0
+	for unit_node in sel:
+		var unit: Unit = unit_node as Unit
+		if unit == null or not _unit_can_attack(unit):
+			continue
+		_clear_attack_goal(unit)
+		unit.attack_target = target_unit
+		_update_attack_pursuit(unit, true)
+		ordered += 1
+	if ordered <= 0:
+		hud.set_status("Selected units cannot attack that target.")
+		return
+	var status_text := "Attack order issued on %s #%d." % [target_unit.label, target_unit.entity_id]
+	if ordered != 1:
+		status_text = "%d units ordered to attack %s #%d." % [ordered, target_unit.label, target_unit.entity_id]
+	hud.set_status(status_text)
+
+func _issue_force_attack(pos: Vector2) -> void:
+	var sel := Game.get_selected_units()
+	if sel.is_empty():
+		hud.set_status("No units selected.")
+		return
+	var t := Game.tile_at(pos.x, pos.y)
+	if t == Vector2i(-1, -1):
+		hud.set_status("Attack-ground order is outside the battlefield.")
+		return
+	var attack_point := Vector2(t.x + 0.5, t.y + 0.5)
+	var hit_bridge: bool = Game.bridge_tile_at(t.x, t.y)
+	var blind_order: bool = not Game.fexp(t.x, t.y)
+	var ordered := 0
+	for unit_node in sel:
+		var unit: Unit = unit_node as Unit
+		if unit == null or not _unit_can_attack(unit):
+			continue
+		_clear_attack_goal(unit)
+		unit.attack_point = attack_point
+		unit.attack_point_tile = t
+		unit.attack_point_hits_bridge = hit_bridge
+		unit.attack_point_blind = blind_order
+		_update_ground_attack_pursuit(unit, true)
+		ordered += 1
+	if ordered <= 0:
+		hud.set_status("Selected units cannot force-attack that location.")
+		return
+	if hit_bridge:
+		hud.set_status(
+			"Force-attack ordered on bridge tile." if ordered == 1
+			else "%d units ordered to force-attack the bridge." % [ordered]
+		)
+		return
+	hud.set_status(
+		"Force-attack ordered." if ordered == 1
+		else "%d units ordered to force-attack that location." % [ordered]
+	)
 
 func _formation_off(idx: int, cnt: int) -> Vector2:
 	if cnt <= 1: return Vector2.ZERO
@@ -685,6 +764,92 @@ func _clear_move_goal(u: Unit) -> void:
 	u.path_goal = null
 	u.next_repath_at = 0.0
 	u.blind_move = false
+
+func _clear_attack_goal(u: Unit) -> void:
+	u.attack_target = null
+	u.attack_point = null
+	u.attack_point_tile = Vector2i(-1, -1)
+	u.attack_point_hits_bridge = false
+	u.attack_point_blind = false
+
+func _unit_can_attack(u: Unit) -> bool:
+	var tank: Tank = u as Tank
+	return tank != null and tank.can_attack and tank.hp > 0
+
+func _unit_attack_range(u: Unit) -> float:
+	var tank: Tank = u as Tank
+	if tank == null:
+		return 0.0
+	return tank.attack_range
+
+func _unit_distance(a: Unit, b: Unit) -> float:
+	return sqrt((b.gx - a.gx) ** 2 + (b.gy - a.gy) ** 2)
+
+func _get_valid_attack_target(u: Unit) -> Unit:
+	var target := u.attack_target as Unit
+	if target == null or not is_instance_valid(target) or target.hp <= 0 or target.faction == u.faction:
+		u.attack_target = null
+		return null
+	return target
+
+func _get_valid_attack_point(u: Unit) -> Variant:
+	var point: Variant = u.attack_point
+	if point == null:
+		return null
+	if u.attack_point_hits_bridge:
+		var tile: Vector2i = u.attack_point_tile
+		if tile == Vector2i(-1, -1) or not Game.bridge_tile_at(tile.x, tile.y):
+			_clear_attack_goal(u)
+			return null
+	return point
+
+func _update_attack_pursuit(u: Unit, force_repath: bool = false) -> bool:
+	var target := _get_valid_attack_target(u)
+	if target == null:
+		return false
+	var target_dist := _unit_distance(u, target)
+	var attack_range: float = _unit_attack_range(u)
+	if target_dist <= attack_range:
+		_clear_move_goal(u)
+		return true
+	var offset_dist := maxf(u.get_collision_radius() + target.get_collision_radius() + 0.18, attack_range * 0.82)
+	var dir := Vector2(target.gx - u.gx, target.gy - u.gy)
+	var dir_len := dir.length()
+	var normal := dir / dir_len if dir_len > 0.001 else Vector2(1.0, 0.0)
+	var desired := Vector2(target.gx, target.gy) - normal * offset_dist
+	var attack_spot: Variant = _find_ground_open_at(desired.x, desired.y, u.get_collision_radius())
+	if attack_spot == null:
+		attack_spot = _find_ground_open_at(target.gx - normal.x * (u.get_collision_radius() + 0.16), target.gy - normal.y * (u.get_collision_radius() + 0.16), u.get_collision_radius())
+	if attack_spot == null:
+		return false
+	return _set_move_goal(u, attack_spot, force_repath, false)
+
+func _update_ground_attack_pursuit(u: Unit, force_repath: bool = false) -> bool:
+	var point_var: Variant = _get_valid_attack_point(u)
+	if point_var == null:
+		return false
+	var attack_point: Vector2 = point_var
+	var attack_range: float = _unit_attack_range(u)
+	var target_dist: float = Vector2(u.gx, u.gy).distance_to(attack_point)
+	if target_dist <= attack_range:
+		_clear_move_goal(u)
+		return true
+	var dir := attack_point - Vector2(u.gx, u.gy)
+	var dir_len := dir.length()
+	var normal := dir / dir_len if dir_len > 0.001 else Vector2(1.0, 0.0)
+	var offset_dist := maxf(u.get_collision_radius() + 0.24, attack_range * 0.82)
+	var desired := attack_point - normal * offset_dist
+	var blind_order: bool = u.attack_point_blind
+	var attack_spot: Variant = _clamp_ground_target(desired.x, desired.y, u.get_collision_radius()) if blind_order else _find_ground_open_at(desired.x, desired.y, u.get_collision_radius())
+	if attack_spot == null and not blind_order:
+		attack_spot = _find_ground_open_at(
+			attack_point.x - normal.x * (u.get_collision_radius() + 0.16),
+			attack_point.y - normal.y * (u.get_collision_radius() + 0.16),
+			u.get_collision_radius())
+	if attack_spot == null:
+		return false
+	var attack_spot_blind: bool = blind_order or not Game.fexp(clampi(int(attack_spot.x), 0, Game.MAP_COLS - 1), clampi(int(attack_spot.y), 0, Game.MAP_ROWS - 1))
+	return _set_move_goal(u, attack_spot, force_repath, attack_spot_blind)
 
 func _set_move_goal(u: Unit, target: Variant, force_repath: bool = false, blind_move: bool = false) -> bool:
 	if target == null:
@@ -847,6 +1012,12 @@ func _update_units(dt: float) -> void:
 			u.supplies = maxf(0.0, u.supplies - Game.SUP_IDLE_RATE * dt)
 		if u.consumes_supplies and not super_tank and u.supplies <= 0:
 			u.supplies = 0.0; continue
+		var attack_target: Unit = null
+		var attack_point: Variant = null
+		if _unit_can_attack(u):
+			attack_target = _get_valid_attack_target(u)
+			if attack_target == null:
+				attack_point = _get_valid_attack_point(u)
 		# truck follow target
 		var active_tu: Unit = null
 		if u is Truck and u.follow_target != null:
@@ -863,12 +1034,10 @@ func _update_units(dt: float) -> void:
 			else:
 				u.follow_target = null
 				_clear_move_goal(u)
-		var hold_for_fire := false
-		if u is Tank and u.can_attack and u.hp > 0:
-			var can_fire := super_tank or not u.consumes_supplies or u.supplies >= Game.SUP_PER_SHOT
-			hold_for_fire = can_fire and _nearest_hostile(u, u.attack_range) != null
-		if hold_for_fire:
-			continue
+		if attack_target != null:
+			_update_attack_pursuit(u)
+		elif attack_point != null:
+			_update_ground_attack_pursuit(u)
 		if u.destination == null:
 			if u is Truck: _truck_aura(u, dt)
 			continue
@@ -1017,33 +1186,69 @@ func _sep(a: Unit, b: Unit) -> void:
 #  COMBAT
 # ═══════════════════════════════════════════════════════════════════════════════
 func _update_combat(_dt: float) -> void:
-	for u: Unit in Game.get_units():
-		if not (u is Tank) or not u.can_attack or u.hp <= 0: continue
-		var tgt = _nearest_hostile(u, u.attack_range)
-		if tgt == null: continue
-		var dx: float = tgt.gx - u.gx; var dy: float = tgt.gy - u.gy
+	for unit_node in Game.get_units():
+		var tank: Tank = unit_node as Tank
+		if tank == null or not tank.can_attack or tank.hp <= 0:
+			continue
+		var attack_range: float = _unit_attack_range(tank)
+		var tgt: Unit = _get_valid_attack_target(tank)
+		var attack_point: Variant = null
+		if tgt != null and _unit_distance(tank, tgt) > attack_range:
+			tgt = null
+		if tgt == null:
+			attack_point = _get_valid_attack_point(tank)
+		if tgt == null and attack_point == null:
+			tgt = _nearest_hostile(tank, attack_range)
+		if tgt == null and attack_point == null:
+			continue
+		var fire_point: Vector2
+		if tgt != null:
+			fire_point = Vector2(tgt.gx, tgt.gy)
+		else:
+			fire_point = attack_point
+			if Vector2(tank.gx, tank.gy).distance_to(fire_point) > attack_range:
+				continue
+		var dx: float = fire_point.x - tank.gx
+		var dy: float = fire_point.y - tank.gy
 		var d := sqrt(dx * dx + dy * dy)
-		if d <= 0.001: continue
-		u.heading = Vector2(dx / d, dy / d)
-		if not u.attack_timer.is_stopped(): continue
-		var super_tank := _super_tank_cheat_applies(u)
-		if u.consumes_supplies and not super_tank and u.supplies < Game.SUP_PER_SHOT: continue
-		var atk_hp_ratio: float = u.hp / u.max_hp if u.max_hp > 0 else 1.0
-		u.attack_timer.start(Game.ATK_CD / maxf(atk_hp_ratio, 0.1))
-		if u.consumes_supplies and not super_tank:
-			u.supplies = maxf(0.0, u.supplies - Game.SUP_PER_SHOT)
-		overlay.fire_shell({
-			"faction": u.faction,
-			"sx": u.gx + u.heading.x * 0.34, "sy": u.gy + u.heading.y * 0.34,
-			"tx": tgt.gx, "ty": tgt.gy,
-			"damage": u.attack_damage,
+		if d <= 0.001:
+			continue
+		tank.heading = Vector2(dx / d, dy / d)
+		if not tank.attack_timer.is_stopped():
+			continue
+		var super_tank := _super_tank_cheat_applies(tank)
+		if tank.consumes_supplies and not super_tank and tank.supplies < Game.SUP_PER_SHOT:
+			continue
+		var atk_hp_ratio: float = tank.hp / tank.max_hp if tank.max_hp > 0 else 1.0
+		tank.attack_timer.start(Game.ATK_CD / maxf(atk_hp_ratio, 0.1))
+		if tank.consumes_supplies and not super_tank:
+			tank.supplies = maxf(0.0, tank.supplies - Game.SUP_PER_SHOT)
+		var muzzle_x: float = tank.gx + tank.heading.x * 0.34
+		var muzzle_y: float = tank.gy + tank.heading.y * 0.34
+		var muzzle_lift: float = Game.surface_lift_at(muzzle_x, muzzle_y) + 19.0
+		var target_lift: float = Game.surface_lift_at(fire_point.x, fire_point.y) + 4.0
+		if tgt != null:
+			target_lift = tgt.get_lift()
+		var shell: Dictionary = {
+			"faction": tank.faction,
+			"sx": muzzle_x, "sy": muzzle_y,
+			"sz_lift": muzzle_lift,
+			"tx": fire_point.x, "ty": fire_point.y,
+			"tz_lift": target_lift,
+			"damage": tank.attack_damage,
 			"target": tgt,
-		})
+		}
+		if tgt == null and tank.attack_point_hits_bridge and tank.attack_point_tile != Vector2i(-1, -1):
+			shell["bridge_tile"] = tank.attack_point_tile
+		overlay.fire_shell(shell)
 
 func _on_shell_hit(shell: Dictionary) -> void:
 	var tgt: Variant = shell.get("target", null)
 	var hit_unit := tgt as Unit
 	if hit_unit == null or not is_instance_valid(hit_unit) or hit_unit.hp <= 0:
+		var bridge_tile: Vector2i = shell.get("bridge_tile", Vector2i(-1, -1))
+		if bridge_tile != Vector2i(-1, -1) and Game.damage_bridge(bridge_tile.x, bridge_tile.y, float(shell.get("damage", Game.ATK_DMG))):
+			hud.set_status("Bridge destroyed.")
 		return
 	hit_unit.hp = maxf(0.0, hit_unit.hp - float(shell.get("damage", Game.ATK_DMG)))
 	hit_unit.status_display_until = Game.elapsed + Game.DMG_BAR_S
@@ -1096,9 +1301,18 @@ func _update_fog() -> void:
 			_reveal(s.grid_col + s.grid_w * 0.5, s.grid_row + s.grid_h * 0.5, Game.VIS_STRUCT)
 	for u: Unit in Game.get_units():
 		if u.faction == Game.PLAYER:
-			_reveal(u.gx, u.gy, u.vision_radius)
+			_reveal(u.gx, u.gy, _unit_vision_radius(u))
 	if prev_vis != Game.fog_vis:
 		Game.fog_revision += 1
+
+func _unit_vision_radius(u: Unit) -> float:
+	var elev_units: float = maxf(0.0, Game.surface_elev_units_at(u.gx, u.gy))
+	if elev_units <= 0.0:
+		return u.vision_radius
+	var observer_height_m: float = Game.VIS_OBSERVER_HEIGHT_M
+	var total_height_m: float = observer_height_m + elev_units * Game.ELEV_METERS_PER_LEVEL
+	var vision_mul: float = sqrt(total_height_m / observer_height_m)
+	return u.vision_radius * vision_mul
 
 func _fog_signature() -> String:
 	var parts: Array[String] = []
@@ -1127,12 +1341,13 @@ func _reveal(cx: float, cy: float, rad: float) -> void:
 func _update_enemy_ai() -> void:
 	for u: Unit in Game.get_units():
 		if u.faction != Game.ENEMY or not (u is Tank) or u.hp <= 0: continue
-		var tgt := _nearest_hostile(u, u.attack_range)
+		var attack_range: float = _unit_attack_range(u)
+		var tgt: Unit = _nearest_hostile(u, attack_range)
 		if tgt != null:
 			_clear_move_goal(u)
 		else:
 			# Seek nearest player unit within a larger detection range
-			var seek := _nearest_hostile(u, Game.ENEMY_SEEK_R)
+			var seek: Unit = _nearest_hostile(u, Game.ENEMY_SEEK_R)
 			if seek != null:
 				_set_move_goal(u, Vector2(seek.gx, seek.gy))
 			else:
@@ -1191,10 +1406,48 @@ func _refresh_ui() -> void:
 func _super_tank_cheat_applies(u: Unit) -> bool:
 	return Game.cheat_super_tanks and u is Tank and u.faction == Game.PLAYER
 
+func _instant_unit_production_active() -> bool:
+	return Game.cheat_super_tanks
+
+func _effective_tank_build_time() -> float:
+	return 0.0 if _instant_unit_production_active() else TANK_BUILD_TIME
+
+func _flush_instant_tank_production() -> void:
+	if not _instant_unit_production_active() or _tank_build_queue <= 0:
+		return
+	_tank_build_paused = false
+	var safety: int = maxi(_tank_build_queue * 2 + 2, 8)
+	while _tank_build_queue > 0 and safety > 0:
+		safety -= 1
+		if not _tank_build_active:
+			if not _start_next_tank_build():
+				_tank_build_waiting_supply = true
+				_tank_build_waiting_spawn = false
+				_tank_build_time_left = 0.0
+				break
+		_tank_build_time_left = 0.0
+		var spawn_ready: Dictionary = _find_tank_spawn_info()
+		if spawn_ready.is_empty():
+			_tank_build_waiting_spawn = true
+			_tank_build_waiting_supply = false
+			break
+		_tank_build_waiting_spawn = false
+		_spawn_player_tank(spawn_ready["spawn"], spawn_ready["depot"])
+		_tank_build_queue -= 1
+		_tank_build_active = false
+	if _tank_build_queue <= 0:
+		_tank_build_time_left = 0.0
+		_tank_build_active = false
+		_tank_build_waiting_spawn = false
+		_tank_build_waiting_supply = false
+
 func _tank_build_progress() -> float:
-	if _tank_build_queue <= 0 or TANK_BUILD_TIME <= 0.0 or not _tank_build_active:
+	if _tank_build_queue <= 0 or not _tank_build_active:
 		return 0.0
-	return 1.0 - clampf(_tank_build_time_left / TANK_BUILD_TIME, 0.0, 1.0)
+	var build_time: float = _effective_tank_build_time()
+	if build_time <= 0.0:
+		return 1.0
+	return 1.0 - clampf(_tank_build_time_left / build_time, 0.0, 1.0)
 
 func _ui_signature() -> String:
 	if Game.build_mode != "":

@@ -13,9 +13,17 @@ const DECO_BUSH := 2
 func _ready() -> void:
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	z_index = -100
+	var on_change := Callable(self, "_on_terrain_changed")
+	if not Game.terrain_changed.is_connected(on_change):
+		Game.terrain_changed.connect(on_change)
 	_bake_decorations()
 	_build_bands()
 	queue_redraw()
+
+func _on_terrain_changed() -> void:
+	queue_redraw()
+	for child in get_children():
+		child.queue_redraw()
 
 func _build_bands() -> void:
 	for child in get_children():

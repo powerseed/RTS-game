@@ -6,11 +6,17 @@ const C_BORDER := Color(1.0, 0.906, 0.659, 0.26)
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var on_change := Callable(self, "_on_terrain_changed")
+	if not Game.terrain_changed.is_connected(on_change):
+		Game.terrain_changed.connect(on_change)
 	queue_redraw()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_RESIZED:
 		queue_redraw()
+
+func _on_terrain_changed() -> void:
+	queue_redraw()
 
 func _draw() -> void:
 	var mm: MiniMap = get_parent() as MiniMap
