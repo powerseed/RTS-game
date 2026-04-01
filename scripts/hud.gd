@@ -18,14 +18,14 @@ const UnitIconScript := preload("res://scripts/unit_icon.gd")
 @onready var sel_panel: PanelContainer = %SelPanel
 @onready var note_panel: PanelContainer = %NotePanel
 @onready var left_column: Control = $Left
-@onready var status_bar: PanelContainer = %StatusBar
+@onready var status_bar = get_node_or_null("%StatusBar") as PanelContainer
 @onready var unit_panel: PanelContainer = %UnitPanel
 @onready var btn_plant: Button = %BtnPlant
 @onready var btn_depot: Button = %BtnDepot
 @onready var lbl_hint: Label = %LblHint
 @onready var lbl_sel_pill: Label = %LblSelPill
 @onready var lbl_sel_detail: Label = %LblSelDetail
-@onready var lbl_status: Label = %LblStatus
+@onready var lbl_status = get_node_or_null("%LblStatus") as Label
 @onready var lbl_unit_pill: Label = %LblUnitPill
 @onready var lbl_unit_name: Label = %LblUnitName
 @onready var lbl_unit_copy: Label = %LblUnitCopy
@@ -82,6 +82,7 @@ const MINIMAP_GAP := 12.0
 const MINIMAP_EDGE := 24.0
 const MINIMAP_HEAD_H := 72.0
 var _last_drag_sig := ""
+var _last_order_coord_text := ""
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -91,7 +92,8 @@ func _ready() -> void:
 	build_panel.add_theme_stylebox_override("panel", _panel_style())
 	sel_panel.add_theme_stylebox_override("panel", _panel_style())
 	note_panel.add_theme_stylebox_override("panel", _panel_style())
-	status_bar.add_theme_stylebox_override("panel", _panel_style(20))
+	if status_bar != null:
+		status_bar.add_theme_stylebox_override("panel", _panel_style(20))
 	unit_panel.add_theme_stylebox_override("panel", _panel_style(22))
 	# button styles
 	for btn in [btn_plant, btn_depot]:
@@ -504,6 +506,21 @@ func _draw_field_hud() -> void:
 	draw_string(font, Vector2(40, panel_y + 28.0),
 		"Combat: player tanks auto-fire on enemy tanks in range. Selected trucks show a resupply radius.",
 		HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.957, 0.831, 0.506))
+	if _last_order_coord_text != "":
+		var coord_panel_w := 290.0
+		var coord_panel_h := 42.0
+		var coord_x := vp.x - coord_panel_w - 26.0
+		var coord_y := 26.0
+		draw_rect(Rect2(coord_x, coord_y, coord_panel_w, coord_panel_h), Color(0.047, 0.071, 0.047, 0.40))
+		draw_rect(Rect2(coord_x, coord_y, coord_panel_w, coord_panel_h), Color(1, 0.914, 0.663, 0.25), false, 1)
+		draw_string(
+			font,
+			Vector2(coord_x + 14.0, coord_y + 28.0),
+			_last_order_coord_text,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			coord_panel_w - 28.0,
+			font_size,
+			Color(0.973, 0.945, 0.871))
 
 func _draw_sel_rect() -> void:
 	if not Game.drag_on or not Game.drag_box: return
@@ -683,7 +700,14 @@ func _on_cancel_tank_queue_pressed() -> void:
 #  PUBLIC API (called from main.gd)
 # ═══════════════════════════════════════════════════════════════════════════════
 func set_status(msg: String) -> void:
-	lbl_status.text = msg
+	if lbl_status != null:
+		lbl_status.text = msg
+
+func set_order_coordinate(tile: Vector2i) -> void:
+	if tile == Vector2i(-1, -1):
+		return
+	_last_order_coord_text = "Order Coordinate: (%d, %d)" % [tile.x, tile.y]
+	queue_redraw()
 
 func set_unit_catalog_supply(current: float) -> void:
 	if unit_catalog_supply_label != null:

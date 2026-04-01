@@ -68,10 +68,7 @@ func _bake_decorations() -> void:
 					_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
 			elif tt == Game.Tile.HILL:
 				if Game.get_ramp(c, r) == Game.Ramp.NONE:
-					if chance < 0.050:
-						_decorations.append(Vector4i(c, r, DECO_ROCK, size_seed))
-					elif chance < 0.078:
-						_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))
+					_decorations.append(Vector4i(c, r, DECO_TREE, size_seed))
 			else:
 				if chance < 0.017:
 					_decorations.append(Vector4i(c, r, DECO_BUSH, size_seed))

@@ -186,49 +186,6 @@ theme_override_font_sizes/font_size = 12
 autowrap_mode = 3
 mouse_filter = 2
 
-[node name="StatusBar" type="PanelContainer" parent="."]
-unique_name_in_owner = true
-layout_mode = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -444.0
-offset_top = 24.0
-offset_right = -24.0
-custom_minimum_size = Vector2(420, 0)
-
-[node name="HBox" type="HBoxContainer" parent="StatusBar"]
-layout_mode = 2
-theme_override_constants/separation = 16
-
-[node name="InfoVBox" type="VBoxContainer" parent="StatusBar/HBox"]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_constants/separation = 2
-
-[node name="Tag" type="Label" parent="StatusBar/HBox/InfoVBox"]
-layout_mode = 2
-text = "COMMAND FEED"
-theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
-theme_override_font_sizes/font_size = 10
-mouse_filter = 2
-
-[node name="Title" type="Label" parent="StatusBar/HBox/InfoVBox"]
-layout_mode = 2
-text = "Extended Isometric Map"
-theme_override_colors/font_color = Color(0.973, 0.945, 0.871, 1)
-theme_override_font_sizes/font_size = 16
-mouse_filter = 2
-
-[node name="LblStatus" type="Label" parent="StatusBar/HBox"]
-unique_name_in_owner = true
-layout_mode = 2
-custom_minimum_size = Vector2(180, 0)
-text = "Enemy armor detected near the center. Open terrain available for construction."
-theme_override_colors/font_color = Color(1, 0.855, 0.447, 1)
-theme_override_font_sizes/font_size = 13
-autowrap_mode = 3
-mouse_filter = 2
-
 [node name="UnitPanel" type="PanelContainer" parent="."]
 unique_name_in_owner = true
 layout_mode = 1

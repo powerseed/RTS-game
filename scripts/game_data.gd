@@ -72,6 +72,7 @@ const VIS_STRUCT       := 8.5
 const VIS_UNIT         := 5.5
 const VIS_TRUCK        := 4.4
 const VIS_OBSERVER_HEIGHT_M := 1.7
+const VIS_STRUCT_OBSERVER_HEIGHT_M := 6.0
 const VIS_FALLBACK     := 9.0
 
 const ATK_RANGE        := 9.6

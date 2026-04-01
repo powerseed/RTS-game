@@ -11,6 +11,9 @@ const PATH_DIRS := [
 ]
 const PATH_GOAL_EPS := 0.45
 const PATH_REPATH_S := 0.3
+const VISION_RAY_COUNT := 12
+const VISION_RAY_STEP := 0.5
+const VISION_BLOCK_EPS_M := 0.35
 const TANK_BUILD_COST := 500.0
 const TANK_BUILD_TIME := 60.0
 
@@ -546,11 +549,13 @@ func _issue_move(pos: Vector2) -> void:
 		_dispatch_truck(ss, pos); return
 	var sel: Array = Game.get_selected_units().filter(func(u): return u.movable)
 	if sel.is_empty(): return
+	var t := Game.tile_at(pos.x, pos.y)
+	if t != Vector2i(-1, -1):
+		hud.set_order_coordinate(t)
 	var target_unit := Game.unit_at_screen(pos.x, pos.y) as Unit
 	if target_unit != null and target_unit.faction != Game.PLAYER:
 		_issue_attack_order(target_unit, sel)
 		return
-	var t := Game.tile_at(pos.x, pos.y)
 	if t == Vector2i(-1, -1):
 		hud.set_status("Move order is outside the battlefield."); return
 	var blind_order: bool = not Game.fexp(t.x, t.y)
@@ -604,6 +609,7 @@ func _issue_force_attack(pos: Vector2) -> void:
 	if t == Vector2i(-1, -1):
 		hud.set_status("Attack-ground order is outside the battlefield.")
 		return
+	hud.set_order_coordinate(t)
 	var attack_point := Vector2(t.x + 0.5, t.y + 0.5)
 	var hit_bridge: bool = Game.bridge_tile_at(t.x, t.y)
 	var blind_order: bool = not Game.fexp(t.x, t.y)
@@ -648,6 +654,8 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 	var t := Game.tile_at(pos.x, pos.y)
 	if tu == null and t == Vector2i(-1, -1):
 		hud.set_status("Supply order is outside the battlefield."); return
+	if t != Vector2i(-1, -1):
+		hud.set_order_coordinate(t)
 	var sp = Game.find_open(depot.grid_col + depot.grid_w + 0.78,
 		depot.grid_row + depot.grid_h * 0.5 + ((randi() % 3) - 1) * 0.36)
 	if sp != null:
@@ -785,6 +793,69 @@ func _unit_attack_range(u: Unit) -> float:
 func _unit_distance(a: Unit, b: Unit) -> float:
 	return sqrt((b.gx - a.gx) ** 2 + (b.gy - a.gy) ** 2)
 
+func _terrain_height_m_at(wx: float, wy: float) -> float:
+	return Game.surface_elev_units_at(wx, wy) * Game.ELEV_METERS_PER_LEVEL
+
+func _eye_height_m_at(wx: float, wy: float, observer_height_m: float) -> float:
+	return _terrain_height_m_at(wx, wy) + observer_height_m
+
+func _vision_sector_start_angle() -> float:
+	return -PI * 0.5
+
+func _vision_sector_step() -> float:
+	return TAU / float(VISION_RAY_COUNT)
+
+func _vision_sector_index(origin: Vector2, target: Vector2) -> int:
+	var dir: Vector2 = target - origin
+	if dir.length_squared() <= 0.0001:
+		return 0
+	var angle: float = atan2(dir.y, dir.x)
+	var wrapped: float = wrapf(angle - _vision_sector_start_angle(), 0.0, TAU)
+	return clampi(int(floor((wrapped + _vision_sector_step() * 0.5) / _vision_sector_step())) % VISION_RAY_COUNT, 0, VISION_RAY_COUNT - 1)
+
+func _build_visibility_sector_ranges(origin: Vector2, vision_radius: float, observer_eye_height_m: float) -> PackedFloat32Array:
+	var ranges := PackedFloat32Array()
+	ranges.resize(VISION_RAY_COUNT)
+	ranges.fill(vision_radius)
+	var angle_step: float = _vision_sector_step()
+	var start_angle: float = _vision_sector_start_angle()
+	for sector_idx in range(VISION_RAY_COUNT):
+		var angle: float = start_angle + angle_step * float(sector_idx)
+		var dir := Vector2(cos(angle), sin(angle))
+		var last_tile := Vector2i(-1, -1)
+		var dist: float = VISION_RAY_STEP
+		while dist <= vision_radius + 0.001:
+			var sample: Vector2 = origin + dir * dist
+			if sample.x < 0.0 or sample.y < 0.0 or sample.x >= Game.MAP_COLS or sample.y >= Game.MAP_ROWS:
+				ranges[sector_idx] = minf(ranges[sector_idx], dist)
+				break
+			var tile := Vector2i(clampi(int(sample.x), 0, Game.MAP_COLS - 1), clampi(int(sample.y), 0, Game.MAP_ROWS - 1))
+			if tile == last_tile:
+				dist += VISION_RAY_STEP
+				continue
+			last_tile = tile
+			var tile_center := Vector2(tile.x + 0.5, tile.y + 0.5)
+			var tile_dist: float = origin.distance_to(tile_center)
+			if tile_dist > vision_radius + 0.75:
+				dist += VISION_RAY_STEP
+				continue
+			var tile_height_m: float = _terrain_height_m_at(sample.x, sample.y)
+			if tile_height_m > observer_eye_height_m + VISION_BLOCK_EPS_M:
+				ranges[sector_idx] = minf(ranges[sector_idx], tile_dist)
+				break
+			dist += VISION_RAY_STEP
+	return ranges
+
+func _point_visible_from(origin: Vector2, vision_radius: float, observer_eye_height_m: float, target: Vector2, _target_height_m: float) -> bool:
+	var total_dist: float = origin.distance_to(target)
+	if total_dist > vision_radius + 0.001:
+		return false
+	if total_dist <= 0.05:
+		return true
+	var sector_ranges: PackedFloat32Array = _build_visibility_sector_ranges(origin, vision_radius, observer_eye_height_m)
+	var sector_idx: int = _vision_sector_index(origin, target)
+	return total_dist <= float(sector_ranges[sector_idx]) + 0.001
+
 func _get_valid_attack_target(u: Unit) -> Unit:
 	var target := u.attack_target as Unit
 	if target == null or not is_instance_valid(target) or target.hp <= 0 or target.faction == u.faction:
@@ -809,7 +880,7 @@ func _update_attack_pursuit(u: Unit, force_repath: bool = false) -> bool:
 		return false
 	var target_dist := _unit_distance(u, target)
 	var attack_range: float = _unit_attack_range(u)
-	if target_dist <= attack_range:
+	if target_dist <= attack_range and _unit_can_see_hostile(u, target):
 		_clear_move_goal(u)
 		return true
 	var offset_dist := maxf(u.get_collision_radius() + target.get_collision_radius() + 0.18, attack_range * 0.82)
@@ -1193,12 +1264,12 @@ func _update_combat(_dt: float) -> void:
 		var attack_range: float = _unit_attack_range(tank)
 		var tgt: Unit = _get_valid_attack_target(tank)
 		var attack_point: Variant = null
-		if tgt != null and _unit_distance(tank, tgt) > attack_range:
+		if tgt != null and (_unit_distance(tank, tgt) > attack_range or not _unit_can_see_hostile(tank, tgt)):
 			tgt = null
 		if tgt == null:
 			attack_point = _get_valid_attack_point(tank)
 		if tgt == null and attack_point == null:
-			tgt = _nearest_hostile(tank, attack_range)
+			tgt = _nearest_visible_hostile(tank, attack_range)
 		if tgt == null and attack_point == null:
 			continue
 		var fire_point: Vector2
@@ -1261,6 +1332,31 @@ func _nearest_hostile(u: Unit, rng: float) -> Unit:
 		if d <= rng and d < best_d: best_d = d; best = c
 	return best
 
+func _unit_can_see_hostile(u: Unit, c: Unit) -> bool:
+	var vision_radius: float = _unit_vision_radius(u)
+	if _unit_distance(u, c) > vision_radius:
+		return false
+	return _point_visible_from(
+		Vector2(u.gx, u.gy),
+		vision_radius,
+		_eye_height_m_at(u.gx, u.gy, Game.VIS_OBSERVER_HEIGHT_M),
+		Vector2(c.gx, c.gy),
+		_eye_height_m_at(c.gx, c.gy, Game.VIS_OBSERVER_HEIGHT_M))
+
+func _nearest_visible_hostile(u: Unit, rng: float) -> Unit:
+	var best: Unit = null
+	var best_d: float = rng
+	for c: Unit in Game.get_units():
+		if c == u or c.hp <= 0 or c.faction == u.faction:
+			continue
+		if not _unit_can_see_hostile(u, c):
+			continue
+		var d: float = _unit_distance(u, c)
+		if d <= rng and d < best_d:
+			best_d = d
+			best = c
+	return best
+
 func _remove_dead() -> void:
 	var enemy_cnt := 0
 	var dead: Array = []
@@ -1298,10 +1394,10 @@ func _update_fog() -> void:
 	Game.fog_reset_vis()
 	for s: Structure in Game.get_structures():
 		if s.faction == Game.PLAYER:
-			_reveal(s.grid_col + s.grid_w * 0.5, s.grid_row + s.grid_h * 0.5, Game.VIS_STRUCT)
+			_reveal(s.grid_col + s.grid_w * 0.5, s.grid_row + s.grid_h * 0.5, Game.VIS_STRUCT, Game.VIS_STRUCT_OBSERVER_HEIGHT_M)
 	for u: Unit in Game.get_units():
 		if u.faction == Game.PLAYER:
-			_reveal(u.gx, u.gy, _unit_vision_radius(u))
+			_reveal(u.gx, u.gy, _unit_vision_radius(u), Game.VIS_OBSERVER_HEIGHT_M)
 	if prev_vis != Game.fog_vis:
 		Game.fog_revision += 1
 
@@ -1323,16 +1419,27 @@ func _fog_signature() -> String:
 		if u.faction == Game.PLAYER:
 			parts.append("u:%d:%d:%d" % [u.get_instance_id(), roundi(u.gx * 4.0), roundi(u.gy * 4.0)])
 	return "|".join(parts)
-func _reveal(cx: float, cy: float, rad: float) -> void:
+
+func _reveal(cx: float, cy: float, rad: float, observer_height_m: float = Game.VIS_OBSERVER_HEIGHT_M) -> void:
+	if rad <= 0.0:
+		return
+	var origin := Vector2(cx, cy)
+	var origin_tile := Vector2i(clampi(int(cx), 0, Game.MAP_COLS - 1), clampi(int(cy), 0, Game.MAP_ROWS - 1))
+	Game.fog_set(origin_tile.x, origin_tile.y)
+	var observer_eye_height_m: float = _eye_height_m_at(cx, cy, observer_height_m)
+	var sector_ranges: PackedFloat32Array = _build_visibility_sector_ranges(origin, rad, observer_eye_height_m)
 	var mnc := clampi(int(cx - rad), 0, Game.MAP_COLS - 1)
 	var mxc := clampi(ceili(cx + rad), 0, Game.MAP_COLS - 1)
 	var mnr := clampi(int(cy - rad), 0, Game.MAP_ROWS - 1)
 	var mxr := clampi(ceili(cy + rad), 0, Game.MAP_ROWS - 1)
-	var r2 := rad * rad
 	for r in range(mnr, mxr + 1):
 		for c in range(mnc, mxc + 1):
-			var dx := c + 0.5 - cx; var dy := r + 0.5 - cy
-			if dx * dx + dy * dy <= r2:
+			var tile_center := Vector2(c + 0.5, r + 0.5)
+			var tile_dist: float = origin.distance_to(tile_center)
+			if tile_dist > rad + 0.001:
+				continue
+			var sector_idx: int = _vision_sector_index(origin, tile_center)
+			if tile_dist <= float(sector_ranges[sector_idx]) + 0.001:
 				Game.fog_set(c, r)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1342,12 +1449,12 @@ func _update_enemy_ai() -> void:
 	for u: Unit in Game.get_units():
 		if u.faction != Game.ENEMY or not (u is Tank) or u.hp <= 0: continue
 		var attack_range: float = _unit_attack_range(u)
-		var tgt: Unit = _nearest_hostile(u, attack_range)
+		var tgt: Unit = _nearest_visible_hostile(u, attack_range)
 		if tgt != null:
 			_clear_move_goal(u)
 		else:
-			# Seek nearest player unit within a larger detection range
-			var seek: Unit = _nearest_hostile(u, Game.ENEMY_SEEK_R)
+			var seek_range: float = maxf(Game.ENEMY_SEEK_R, _unit_vision_radius(u))
+			var seek: Unit = _nearest_visible_hostile(u, seek_range)
 			if seek != null:
 				_set_move_goal(u, Vector2(seek.gx, seek.gy))
 			else:
