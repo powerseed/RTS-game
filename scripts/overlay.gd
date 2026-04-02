@@ -18,6 +18,9 @@ var _fog_uvs := PackedVector2Array([Vector2(0, 0), Vector2(1, 0), Vector2(1, 1),
 var _fog_white := PackedColorArray([Color.WHITE, Color.WHITE, Color.WHITE, Color.WHITE])
 var _seen_fog_revision: int = -1
 var _last_overlay_sig := ""
+var _mouse_warning_text: String = ""
+var _mouse_warning_world := Vector2.ZERO
+var _mouse_warning_until: float = 0.0
 
 func _ready() -> void:
 	z_index = 3000
@@ -52,12 +55,19 @@ func _draw() -> void:
 	_draw_depot_radius()
 	_draw_truck_radius()
 	_draw_ghost()
+	_draw_mouse_warning()
 
 # Public API
 func fire_shell(shell: Dictionary) -> void:
 	shell["cx"] = float(shell.get("sx", 0.0))
 	shell["cy"] = float(shell.get("sy", 0.0))
 	shells.append(shell)
+
+func show_mouse_warning(msg: String, screen_pos: Vector2, duration: float = 0.95) -> void:
+	_mouse_warning_text = msg
+	_mouse_warning_world = Game.screen_to_world(screen_pos + Vector2(18.0, -14.0))
+	_mouse_warning_until = Game.elapsed + maxf(duration, 0.1)
+	queue_redraw()
 
 # Shells / explosions
 func _update_shells(dt: float) -> void:
@@ -74,7 +84,8 @@ func _update_shells(dt: float) -> void:
 		var target_pos := Vector2(float(shell.get("tx", 0.0)), float(shell.get("ty", 0.0)))
 		var delta := target_pos - shell_pos
 		var dist := delta.length()
-		var step := Game.SHELL_SPEED * dt
+		var shell_speed: float = float(shell.get("speed", Game.SHELL_SPEED))
+		var step := shell_speed * dt
 		if dist <= Game.SHELL_HIT_R or step >= dist:
 			_add_explosion(String(shell.get("faction", Game.PLAYER)), target_pos.x, target_pos.y)
 			emit_signal("shell_hit", shell)
@@ -113,12 +124,16 @@ func _draw_shells() -> void:
 		var start_lift: float = float(shell.get("sz_lift", Game.surface_lift_at(origin.x, origin.y) + 19.0))
 		var end_lift: float = float(shell.get("tz_lift", Game.surface_lift_at(target_pos.x, target_pos.y) + 4.0))
 		var ground_lift: float = Game.surface_lift_at(shell_pos.x, shell_pos.y)
+		var arc_base: float = float(shell.get("arc_base", Game.SHELL_ARC_BASE))
+		var arc_per_unit: float = float(shell.get("arc_per_unit", Game.SHELL_ARC_PER_UNIT))
+		var arc_min: float = float(shell.get("arc_min", 12.0))
+		var arc_max: float = float(shell.get("arc_max", 38.0))
 		var arc_peak: float = clampf(
-			Game.SHELL_ARC_BASE +
-			total_len * Game.SHELL_ARC_PER_UNIT +
+			arc_base +
+			total_len * arc_per_unit +
 			maxf(0.0, start_lift - end_lift) * Game.SHELL_ARC_ELEV_BIAS,
-			12.0,
-			38.0
+			arc_min,
+			arc_max
 		)
 		var arc_t: float = 4.0 * travel_t * (1.0 - travel_t)
 		var shell_lift: float = lerpf(start_lift, end_lift, travel_t) + arc_peak * arc_t
@@ -147,6 +162,27 @@ func _draw_explosions() -> void:
 		_ellipse_stroke(c, ring, ring * 0.58, Color(1.0, 0.776, 0.459, 0.85 * (1.0 - t)), 2.0)
 		_ellipse_fill(Vector2(c.x, c.y - 2.0), smoke, smoke * 0.5, smoke_col)
 
+func _draw_mouse_warning() -> void:
+	if _mouse_warning_text == "" or Game.elapsed >= _mouse_warning_until:
+		return
+	var font := ThemeDB.fallback_font
+	var font_size := 18
+	var text_size := font.get_string_size(_mouse_warning_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	var pad := Vector2(12.0, 8.0)
+	var box_pos := _mouse_warning_world + Vector2(-6.0, -text_size.y - 10.0)
+	var box_size := Vector2(text_size.x + pad.x * 2.0, text_size.y + pad.y * 2.0)
+	draw_rect(Rect2(box_pos, box_size), Color(0.125, 0.043, 0.043, 0.88))
+	draw_rect(Rect2(box_pos, box_size), Color(0.976, 0.659, 0.576, 0.92), false, 1.5)
+	draw_string(
+		font,
+		box_pos + Vector2(pad.x, pad.y + text_size.y * 0.8),
+		_mouse_warning_text,
+		HORIZONTAL_ALIGNMENT_LEFT,
+		-1,
+		font_size,
+		Color(1.0, 0.910, 0.890)
+	)
+
 # Fog of war
 func _draw_fog() -> void:
 	if Game.fog_revision != _seen_fog_revision:
@@ -170,6 +206,8 @@ func _overlay_signature() -> String:
 	]
 	if Game.build_mode != "":
 		parts.append("ht:" + str(Game.hover_tile.x) + "," + str(Game.hover_tile.y))
+	if _mouse_warning_text != "" and Game.elapsed < _mouse_warning_until:
+		parts.append("mw:%s:%d:%d" % [_mouse_warning_text, roundi(_mouse_warning_world.x), roundi(_mouse_warning_world.y)])
 	var ss = Game.selected_structure
 	if ss != null and is_instance_valid(ss) and ss is SupplyDepot:
 		parts.append("sd:" + str(ss.get_instance_id()))

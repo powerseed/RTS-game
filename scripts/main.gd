@@ -3,6 +3,7 @@ extends Node2D
 ## Uses Godot input actions, signals, groups, and node-based entities.
 
 const TankScene := preload("res://scenes/tank.tscn")
+const MortarSquadScene := preload("res://scenes/mortar_squad.tscn")
 const TruckScene := preload("res://scenes/truck.tscn")
 const SupplyDepotScene := preload("res://scenes/supply_depot.tscn")
 const AirportScene := preload("res://scenes/airport.tscn")
@@ -16,6 +17,8 @@ const VISION_RAY_STEP := 0.5
 const VISION_BLOCK_EPS_M := 0.35
 const TANK_BUILD_COST := 500.0
 const TANK_BUILD_TIME := 60.0
+const MORTAR_BUILD_COST := 200.0
+const MORTAR_BUILD_TIME := 10.0
 
 @onready var cam2d: Camera2D = $Camera2D
 @onready var entities: Node2D = $Entities
@@ -29,6 +32,12 @@ var _tank_build_active: bool = false
 var _tank_build_paused: bool = false
 var _tank_build_waiting_spawn: bool = false
 var _tank_build_waiting_supply: bool = false
+var _mortar_build_queue: int = 0
+var _mortar_build_time_left: float = 0.0
+var _mortar_build_active: bool = false
+var _mortar_build_paused: bool = false
+var _mortar_build_waiting_spawn: bool = false
+var _mortar_build_waiting_supply: bool = false
 
 func _ready() -> void:
 	Game.camera = cam2d
@@ -42,6 +51,8 @@ func _ready() -> void:
 	hud.unit_build_requested.connect(_on_unit_build_requested)
 	hud.tank_queue_pause_requested.connect(_on_tank_queue_pause_requested)
 	hud.tank_queue_cancel_requested.connect(_on_tank_queue_cancel_requested)
+	hud.mortar_queue_pause_requested.connect(_on_mortar_queue_pause_requested)
+	hud.mortar_queue_cancel_requested.connect(_on_mortar_queue_cancel_requested)
 	hud.sync_build_buttons()
 	hud.reset_selection()
 	hud.reset_unit_panel()
@@ -94,7 +105,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 					if _super_tank_cheat_applies(u):
 						u.supplies = u.max_supplies
 				_flush_instant_tank_production()
-				hud.set_status("Super tank cheat enabled. Player tanks now move 10x faster, use no supplies, and unit production is instant.")
+				_flush_instant_mortar_production()
+				hud.set_status("F10 cheat enabled. All player units now move 10x faster. Player tanks keep unlimited supplies, and unit production is instant.")
 			else:
 				hud.set_status("Super tank cheat is already active.")
 			return
@@ -288,6 +300,8 @@ func _on_unit_build_requested(unit_type: String, amount: int) -> void:
 	match unit_type:
 		Game.T_TANK:
 			_queue_tanks_from_supply_network(amount)
+		Game.T_MORTAR:
+			_queue_mortars_from_supply_network(amount)
 		_:
 			hud.set_status("That unit is not available yet.")
 
@@ -317,6 +331,33 @@ func _queue_tanks_from_supply_network(amount: int) -> void:
 		hud.set_status("Queued %d tank%s. Production is waiting for 500 supply." % [amount, "" if amount == 1 else "s"])
 		return
 	hud.set_status("Queued %d tank%s for production." % [amount, "" if amount == 1 else "s"])
+
+func _queue_mortars_from_supply_network(amount: int) -> void:
+	_mortar_build_queue += amount
+	if _instant_unit_production_active():
+		_flush_instant_mortar_production()
+		if _mortar_build_queue <= 0:
+			hud.set_status("Queued %d mortar squad%s. Production completed instantly." % [amount, "" if amount == 1 else "s"])
+			return
+		if _mortar_build_waiting_supply:
+			hud.set_status("Queued %d mortar squad%s. Instant production is waiting for 200 supply." % [amount, "" if amount == 1 else "s"])
+			return
+		if _mortar_build_waiting_spawn:
+			hud.set_status("Queued %d mortar squad%s. Instant production is waiting for a clear spawn point." % [amount, "" if amount == 1 else "s"])
+			return
+	if _mortar_build_paused:
+		hud.set_status("Queued %d mortar squad%s. Production remains paused." % [amount, "" if amount == 1 else "s"])
+		return
+	if not _mortar_build_active:
+		if _start_next_mortar_build():
+			hud.set_status("Queued %d mortar squad%s for production." % [amount, "" if amount == 1 else "s"])
+			return
+		_mortar_build_waiting_supply = true
+		_mortar_build_waiting_spawn = false
+		_mortar_build_time_left = 0.0
+		hud.set_status("Queued %d mortar squad%s. Production is waiting for 200 supply." % [amount, "" if amount == 1 else "s"])
+		return
+	hud.set_status("Queued %d mortar squad%s for production." % [amount, "" if amount == 1 else "s"])
 
 func _player_supply_total() -> float:
 	var total := 0.0
@@ -369,6 +410,19 @@ func _start_next_tank_build() -> bool:
 	_tank_build_waiting_supply = false
 	return true
 
+func _start_next_mortar_build() -> bool:
+	if _mortar_build_queue <= 0 or _mortar_build_active or _mortar_build_paused:
+		return false
+	if _player_supply_total() + 0.001 < MORTAR_BUILD_COST:
+		return false
+	if not _deduct_player_supply(MORTAR_BUILD_COST):
+		return false
+	_mortar_build_time_left = _effective_mortar_build_time()
+	_mortar_build_active = true
+	_mortar_build_waiting_spawn = false
+	_mortar_build_waiting_supply = false
+	return true
+
 func _on_tank_queue_pause_requested() -> void:
 	if _tank_build_queue <= 0:
 		hud.set_status("No tank queue is active.")
@@ -406,15 +460,52 @@ func _on_tank_queue_cancel_requested() -> void:
 	else:
 		hud.set_status("Tank queue cancelled.")
 
-func _find_tank_spawn_info() -> Dictionary:
+func _on_mortar_queue_pause_requested() -> void:
+	if _mortar_build_queue <= 0:
+		hud.set_status("No mortar squad queue is active.")
+		return
+	_mortar_build_paused = not _mortar_build_paused
+	if _mortar_build_paused:
+		hud.set_status("Mortar squad queue paused.")
+		return
+	if not _mortar_build_active and _start_next_mortar_build():
+		hud.set_status("Mortar squad queue resumed.")
+		return
+	if _mortar_build_waiting_supply:
+		hud.set_status("Mortar squad queue resumed. Waiting for 200 supply.")
+	elif _mortar_build_waiting_spawn:
+		hud.set_status("Mortar squad queue resumed. Waiting for a clear spawn point.")
+	else:
+		hud.set_status("Mortar squad queue resumed.")
+
+func _on_mortar_queue_cancel_requested() -> void:
+	if _mortar_build_queue <= 0:
+		hud.set_status("No mortar squad queue is active.")
+		return
+	var had_active_build: bool = _mortar_build_active
+	var refunded: float = 0.0
+	if had_active_build:
+		refunded = _refund_player_supply(MORTAR_BUILD_COST)
+	_mortar_build_queue = 0
+	_mortar_build_time_left = 0.0
+	_mortar_build_active = false
+	_mortar_build_paused = false
+	_mortar_build_waiting_spawn = false
+	_mortar_build_waiting_supply = false
+	if had_active_build and refunded > 0.001:
+		hud.set_status("Mortar squad queue cancelled. Refunded %d supply for the in-progress squad." % [roundi(refunded)])
+	else:
+		hud.set_status("Mortar squad queue cancelled.")
+
+func _find_spawn_info(radius: float) -> Dictionary:
 	var best_depot: SupplyDepot = null
 	var best_spawn: Variant = null
-	var best_supply := -1.0
+	var best_supply: float = -1.0
 	for s_node in Game.get_structures():
 		var depot: SupplyDepot = s_node as SupplyDepot
 		if depot == null or depot.faction != Game.PLAYER:
 			continue
-		var spawn: Variant = _find_tank_spawn_near_depot(depot)
+		var spawn: Variant = _find_spawn_near_depot(depot, radius)
 		if spawn == null:
 			continue
 		if depot.stored > best_supply:
@@ -425,7 +516,7 @@ func _find_tank_spawn_info() -> Dictionary:
 		return {}
 	return {"depot": best_depot, "spawn": best_spawn}
 
-func _find_tank_spawn_near_depot(depot: SupplyDepot):
+func _find_spawn_near_depot(depot: SupplyDepot, radius: float):
 	var gx: float = depot.grid_col
 	var gy: float = depot.grid_row
 	var w: float = depot.grid_w
@@ -441,7 +532,7 @@ func _find_tank_spawn_near_depot(depot: SupplyDepot):
 		Vector2(gx - 0.9, gy + h + 0.1),
 	]
 	for offset in offsets:
-		var spawn: Variant = _find_ground_open_at(offset.x, offset.y, Game.TANK_COL_R)
+		var spawn: Variant = _find_ground_open_at(offset.x, offset.y, radius)
 		if spawn != null:
 			return spawn
 	return null
@@ -460,7 +551,24 @@ func _spawn_player_tank(spawn: Vector2, _depot: SupplyDepot) -> void:
 	entities.add_child(tank)
 	Game.unit_spawned.emit(tank)
 
+func _spawn_player_mortar(spawn: Vector2, _depot: SupplyDepot) -> void:
+	var squad := MortarSquadScene.instantiate() as MortarSquad
+	squad.faction = Game.PLAYER
+	squad.entity_id = Game.next_id
+	Game.next_id += 1
+	squad.gx = spawn.x
+	squad.gy = spawn.y
+	squad.supplies = 100.0
+	squad.max_supplies = 100.0
+	squad.heading = Vector2(1.0, 0.0)
+	entities.add_child(squad)
+	Game.unit_spawned.emit(squad)
+
 func _update_player_production(dt: float) -> void:
+	_update_tank_production(dt)
+	_update_mortar_production(dt)
+
+func _update_tank_production(dt: float) -> void:
 	if _tank_build_queue <= 0:
 		_tank_build_time_left = 0.0
 		_tank_build_active = false
@@ -487,7 +595,7 @@ func _update_player_production(dt: float) -> void:
 		_tank_build_time_left = maxf(0.0, _tank_build_time_left - dt)
 		if _tank_build_time_left > 0.0:
 			return
-	var spawn_ready: Dictionary = _find_tank_spawn_info()
+	var spawn_ready: Dictionary = _find_spawn_info(Game.TANK_COL_R)
 	if spawn_ready.is_empty():
 		_tank_build_waiting_spawn = true
 		return
@@ -505,6 +613,52 @@ func _update_player_production(dt: float) -> void:
 	_tank_build_time_left = 0.0
 	_tank_build_waiting_supply = true
 	hud.set_status("Tank completed. %d tank%s remain queued. Waiting for 500 supply." % [_tank_build_queue, "" if _tank_build_queue == 1 else "s"])
+
+func _update_mortar_production(dt: float) -> void:
+	if _mortar_build_queue <= 0:
+		_mortar_build_time_left = 0.0
+		_mortar_build_active = false
+		_mortar_build_paused = false
+		_mortar_build_waiting_spawn = false
+		_mortar_build_waiting_supply = false
+		return
+	if _instant_unit_production_active():
+		_flush_instant_mortar_production()
+		return
+	if _mortar_build_paused:
+		return
+	if not _mortar_build_active:
+		var was_waiting_supply: bool = _mortar_build_waiting_supply
+		if _start_next_mortar_build():
+			if was_waiting_supply:
+				hud.set_status("Mortar squad production resumed.")
+			return
+		if not _mortar_build_waiting_supply:
+			_mortar_build_waiting_supply = true
+			hud.set_status("Mortar squad queue waiting for 200 supply.")
+		return
+	if _mortar_build_time_left > 0.0:
+		_mortar_build_time_left = maxf(0.0, _mortar_build_time_left - dt)
+		if _mortar_build_time_left > 0.0:
+			return
+	var spawn_ready: Dictionary = _find_spawn_info(Game.TRUCK_COL_R)
+	if spawn_ready.is_empty():
+		_mortar_build_waiting_spawn = true
+		return
+	_mortar_build_waiting_spawn = false
+	_spawn_player_mortar(spawn_ready["spawn"], spawn_ready["depot"])
+	_mortar_build_queue -= 1
+	_mortar_build_active = false
+	if _mortar_build_queue <= 0:
+		_mortar_build_time_left = 0.0
+		hud.set_status("Mortar squad production complete.")
+		return
+	if _start_next_mortar_build():
+		hud.set_status("Mortar squad completed. %d mortar squad%s remain in queue." % [_mortar_build_queue, "" if _mortar_build_queue == 1 else "s"])
+		return
+	_mortar_build_time_left = 0.0
+	_mortar_build_waiting_supply = true
+	hud.set_status("Mortar squad completed. %d mortar squad%s remain queued. Waiting for 200 supply." % [_mortar_build_queue, "" if _mortar_build_queue == 1 else "s"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SELECTION
@@ -539,6 +693,19 @@ func _select_in_rect(a: Vector2, b: Vector2) -> void:
 	Game.selected_structure = null; Game.selected_units = selected
 	hud.set_status(str(selected.size()) + " units selected.")
 
+func _show_no_path_warning(pos: Vector2) -> void:
+	overlay.show_mouse_warning("No path found", pos)
+	hud.set_status("No path found.")
+
+func _can_reach_exact_ground_target(u: Unit, target: Vector2) -> bool:
+	var tc := clampi(int(target.x), 0, Game.MAP_COLS - 1)
+	var tr := clampi(int(target.y), 0, Game.MAP_ROWS - 1)
+	if u.faction == Game.PLAYER and not Game.fexp(tc, tr):
+		return false
+	if not _ground_clear_at_radius(target.x, target.y, u.get_collision_radius()):
+		return false
+	return _find_path_points(u, Vector2(u.gx, u.gy), target, u.get_collision_radius(), u.faction == Game.PLAYER) != null
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MOVE ORDERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -559,25 +726,57 @@ func _issue_move(pos: Vector2) -> void:
 	if t == Vector2i(-1, -1):
 		hud.set_status("Move order is outside the battlefield."); return
 	var blind_order: bool = not Game.fexp(t.x, t.y)
-	var tgt: Variant = _clamp_ground_target(t.x + 0.5, t.y + 0.5, Game.TANK_COL_R) if blind_order else _find_ground_open_at(t.x + 0.5, t.y + 0.5, Game.TANK_COL_R)
-	if tgt == null:
-		hud.set_status("That move order is blocked by water or structures."); return
+	var tgt := Vector2(t.x + 0.5, t.y + 0.5)
+	if blind_order:
+		var blind_tgt := _clamp_ground_target(tgt.x, tgt.y, Game.TANK_COL_R)
+		var blind_ordered := 0
+		for i in sel.size():
+			var off := _formation_off(i, sel.size())
+			var unit: Unit = sel[i] as Unit
+			if unit == null:
+				continue
+			var rt := _clamp_ground_target(blind_tgt.x + off.x, blind_tgt.y + off.y, unit.get_collision_radius())
+			_clear_attack_goal(unit)
+			if not _set_move_goal(unit, rt, true, true):
+				continue
+			if unit is Truck:
+				unit.follow_target = null
+			blind_ordered += 1
+		if blind_ordered == 0:
+			_show_no_path_warning(pos)
+			return
+		hud.set_status(
+			sel[0].label + " ordered to explore." if blind_ordered == 1
+			else str(blind_ordered) + " units ordered to explore."
+		)
+		return
 	var ordered := 0
+	var failed := 0
 	for i in sel.size():
 		var off := _formation_off(i, sel.size())
-		var rt: Variant = _clamp_ground_target(tgt.x + off.x, tgt.y + off.y, sel[i].get_collision_radius()) if blind_order else _find_ground_open_at(tgt.x + off.x, tgt.y + off.y, sel[i].get_collision_radius())
-		if rt == null and not blind_order:
-			rt = _find_ground_open_at(tgt.x, tgt.y, sel[i].get_collision_radius())
-		if rt == null:
+		var unit: Unit = sel[i] as Unit
+		if unit == null:
+			failed += 1
 			continue
-		var unit_blind_order: bool = blind_order or not Game.fexp(clampi(int(rt.x), 0, Game.MAP_COLS - 1), clampi(int(rt.y), 0, Game.MAP_ROWS - 1))
-		_clear_attack_goal(sel[i])
-		_set_move_goal(sel[i], rt, true, unit_blind_order)
-		if sel[i] is Truck:
-			sel[i].follow_target = null
+		var rt := Vector2(tgt.x + off.x, tgt.y + off.y)
+		if not _can_reach_exact_ground_target(unit, rt):
+			failed += 1
+			continue
+		_clear_attack_goal(unit)
+		if not _set_move_goal(unit, rt, true, false):
+			_clear_move_goal(unit)
+			failed += 1
+			continue
+		if unit is Truck:
+			unit.follow_target = null
 		ordered += 1
 	if ordered == 0:
-		hud.set_status("No safe ground target was found."); return
+		_show_no_path_warning(pos)
+		return
+	if failed > 0:
+		overlay.show_mouse_warning("No path found", pos)
+		hud.set_status("%d units ordered to move. %d had no path." % [ordered, failed])
+		return
 	hud.set_status(
 		sel[0].label + " ordered to move." if ordered == 1
 		else str(ordered) + " units ordered to move.")
@@ -740,30 +939,53 @@ func _clamp_ground_target(wx: float, wy: float, radius: float) -> Vector2:
 		clampf(wy, pad, Game.MAP_ROWS - pad)
 	)
 
+func _unit_max_climb_up_steps(u: Unit) -> int:
+	return maxi(0, u.max_climb_up_steps)
+
+func _can_unit_move_between_cells(u: Unit, c1: int, r1: int, c2: int, r2: int) -> bool:
+	return Game.can_move_between_cells(c1, r1, c2, r2, _unit_max_climb_up_steps(u))
+
+func _can_unit_move_between_points(u: Unit, ax: float, ay: float, bx: float, by: float) -> bool:
+	return Game.can_move_between_points(ax, ay, bx, by, _unit_max_climb_up_steps(u))
+
+func _unit_uphill_speed_multiplier(u: Unit, step: Vector2) -> float:
+	if step.length_squared() <= 0.0000001:
+		return 1.0
+	var c1 := clampi(int(u.gx), 0, Game.MAP_COLS - 1)
+	var r1 := clampi(int(u.gy), 0, Game.MAP_ROWS - 1)
+	var c2 := clampi(int(u.gx + step.x), 0, Game.MAP_COLS - 1)
+	var r2 := clampi(int(u.gy + step.y), 0, Game.MAP_ROWS - 1)
+	if c1 == c2 and r1 == r2:
+		return 1.0
+	if Game.get_elev(c2, r2) > Game.get_elev(c1, r1):
+		return clampf(u.uphill_speed_mul, 0.0, 1.0)
+	return 1.0
+
 func _apply_ground_step(u: Unit, step: Vector2) -> float:
 	if step.length_squared() <= 0.0000001:
 		return 0.0
-	var full := Vector2(u.gx + step.x, u.gy + step.y)
-	if Game.can_move_between_points(u.gx, u.gy, full.x, full.y) and _ground_clear_at_radius(full.x, full.y, u.get_collision_radius()):
+	var slowed_step := step * _unit_uphill_speed_multiplier(u, step)
+	var full := Vector2(u.gx + slowed_step.x, u.gy + slowed_step.y)
+	if _can_unit_move_between_points(u, u.gx, u.gy, full.x, full.y) and _ground_clear_at_radius(full.x, full.y, u.get_collision_radius()):
 		u.gx = full.x
 		u.gy = full.y
-		return step.length()
-	var can_x := absf(step.x) > 0.0001 and Game.can_move_between_points(u.gx, u.gy, u.gx + step.x, u.gy) and _ground_clear_at_radius(u.gx + step.x, u.gy, u.get_collision_radius())
-	var can_y := absf(step.y) > 0.0001 and Game.can_move_between_points(u.gx, u.gy, u.gx, u.gy + step.y) and _ground_clear_at_radius(u.gx, u.gy + step.y, u.get_collision_radius())
+		return slowed_step.length()
+	var can_x := absf(slowed_step.x) > 0.0001 and _can_unit_move_between_points(u, u.gx, u.gy, u.gx + slowed_step.x, u.gy) and _ground_clear_at_radius(u.gx + slowed_step.x, u.gy, u.get_collision_radius())
+	var can_y := absf(slowed_step.y) > 0.0001 and _can_unit_move_between_points(u, u.gx, u.gy, u.gx, u.gy + slowed_step.y) and _ground_clear_at_radius(u.gx, u.gy + slowed_step.y, u.get_collision_radius())
 	if can_x and can_y and u.destination != null:
-		var x_pos := Vector2(u.gx + step.x, u.gy)
-		var y_pos := Vector2(u.gx, u.gy + step.y)
+		var x_pos := Vector2(u.gx + slowed_step.x, u.gy)
+		var y_pos := Vector2(u.gx, u.gy + slowed_step.y)
 		if x_pos.distance_to(u.destination) <= y_pos.distance_to(u.destination):
 			u.gx = x_pos.x
-			return absf(step.x)
+			return absf(slowed_step.x)
 		u.gy = y_pos.y
-		return absf(step.y)
+		return absf(slowed_step.y)
 	if can_x:
-		u.gx += step.x
-		return absf(step.x)
+		u.gx += slowed_step.x
+		return absf(slowed_step.x)
 	if can_y:
-		u.gy += step.y
-		return absf(step.y)
+		u.gy += slowed_step.y
+		return absf(slowed_step.y)
 	return 0.0
 
 func _clear_move_goal(u: Unit) -> void:
@@ -874,13 +1096,67 @@ func _get_valid_attack_point(u: Unit) -> Variant:
 			return null
 	return point
 
+func _uses_direct_fire_ballistics(u: Unit) -> bool:
+	return u is Tank and not (u is MortarSquad)
+
+func _fire_target_elevation_allowed(u: Unit, fire_point: Vector2) -> bool:
+	if not _uses_direct_fire_ballistics(u):
+		return true
+	var shooter_c: int = clampi(int(u.gx), 0, Game.MAP_COLS - 1)
+	var shooter_r: int = clampi(int(u.gy), 0, Game.MAP_ROWS - 1)
+	var target_c: int = clampi(int(fire_point.x), 0, Game.MAP_COLS - 1)
+	var target_r: int = clampi(int(fire_point.y), 0, Game.MAP_ROWS - 1)
+	var shooter_elev: int = Game.get_elev(shooter_c, shooter_r)
+	var target_elev: int = Game.get_elev(target_c, target_r)
+	return target_elev <= shooter_elev + 1
+
+func _projectile_path_clear(u: Unit, fire_point: Vector2, end_lift: float) -> bool:
+	if not _uses_direct_fire_ballistics(u):
+		return true
+	if not _fire_target_elevation_allowed(u, fire_point):
+		return false
+	var fire_vec: Vector2 = fire_point - Vector2(u.gx, u.gy)
+	var fire_len: float = fire_vec.length()
+	if fire_len <= 0.001:
+		return true
+	var fire_dir: Vector2 = fire_vec / fire_len
+	var origin := Vector2(u.gx + fire_dir.x * 0.34, u.gy + fire_dir.y * 0.34)
+	var start_lift: float = Game.surface_lift_at(origin.x, origin.y) + 19.0
+	var total_len: float = origin.distance_to(fire_point)
+	var target_cell := Vector2i(clampi(int(fire_point.x), 0, Game.MAP_COLS - 1), clampi(int(fire_point.y), 0, Game.MAP_ROWS - 1))
+	var arc_peak: float = clampf(
+		Game.SHELL_ARC_BASE +
+		total_len * Game.SHELL_ARC_PER_UNIT +
+		maxf(0.0, start_lift - end_lift) * Game.SHELL_ARC_ELEV_BIAS,
+		12.0,
+		38.0
+	)
+	var steps: int = maxi(4, ceili(total_len / 0.18))
+	for i in range(1, steps):
+		var travel_t: float = float(i) / float(steps)
+		var sample: Vector2 = origin.lerp(fire_point, travel_t)
+		var sample_cell := Vector2i(clampi(int(sample.x), 0, Game.MAP_COLS - 1), clampi(int(sample.y), 0, Game.MAP_ROWS - 1))
+		if sample_cell == target_cell:
+			continue
+		var shell_lift: float = lerpf(start_lift, end_lift, travel_t) + arc_peak * (4.0 * travel_t * (1.0 - travel_t))
+		var terrain_lift: float = Game.surface_lift_at(sample.x, sample.y)
+		if terrain_lift + 4.0 > shell_lift:
+			return false
+	return true
+
+func _unit_can_fire_at_target(u: Unit, target: Unit) -> bool:
+	return _projectile_path_clear(u, Vector2(target.gx, target.gy), target.get_lift())
+
+func _unit_can_fire_at_point(u: Unit, fire_point: Vector2) -> bool:
+	return _projectile_path_clear(u, fire_point, Game.surface_lift_at(fire_point.x, fire_point.y) + 4.0)
+
 func _update_attack_pursuit(u: Unit, force_repath: bool = false) -> bool:
 	var target := _get_valid_attack_target(u)
 	if target == null:
 		return false
 	var target_dist := _unit_distance(u, target)
 	var attack_range: float = _unit_attack_range(u)
-	if target_dist <= attack_range and _unit_can_see_hostile(u, target):
+	if target_dist <= attack_range and _unit_can_see_hostile(u, target) and _unit_can_fire_at_target(u, target):
 		_clear_move_goal(u)
 		return true
 	var offset_dist := maxf(u.get_collision_radius() + target.get_collision_radius() + 0.18, attack_range * 0.82)
@@ -902,7 +1178,7 @@ func _update_ground_attack_pursuit(u: Unit, force_repath: bool = false) -> bool:
 	var attack_point: Vector2 = point_var
 	var attack_range: float = _unit_attack_range(u)
 	var target_dist: float = Vector2(u.gx, u.gy).distance_to(attack_point)
-	if target_dist <= attack_range:
+	if target_dist <= attack_range and _unit_can_fire_at_point(u, attack_point):
 		_clear_move_goal(u)
 		return true
 	var dir := attack_point - Vector2(u.gx, u.gy)
@@ -954,7 +1230,7 @@ func _repath_unit(u: Unit) -> bool:
 	if require_explored and not Game.fexp(goal_cell.x, goal_cell.y):
 		u.path_goal = null
 		return false
-	var route: Variant = _find_path_points(Vector2(u.gx, u.gy), u.destination, u.get_collision_radius(), require_explored)
+	var route: Variant = _find_path_points(u, Vector2(u.gx, u.gy), u.destination, u.get_collision_radius(), require_explored)
 	u.path_goal = u.destination
 	if route == null:
 		return false
@@ -962,10 +1238,10 @@ func _repath_unit(u: Unit) -> bool:
 		u.path.append(p)
 	return true
 
-func _find_path_points(start: Vector2, goal: Vector2, radius: float, require_explored: bool = false):
+func _find_path_points(u: Unit, start: Vector2, goal: Vector2, radius: float, require_explored: bool = false):
 	if start.distance_to(goal) <= 0.08:
 		return []
-	if _ground_segment_clear(start, goal, radius, require_explored):
+	if _ground_segment_clear(u, start, goal, radius, require_explored):
 		return [goal]
 	var start_cell := Vector2i(clampi(int(start.x), 0, Game.MAP_COLS - 1), clampi(int(start.y), 0, Game.MAP_ROWS - 1))
 	var goal_cell := Vector2i(clampi(int(goal.x), 0, Game.MAP_COLS - 1), clampi(int(goal.y), 0, Game.MAP_ROWS - 1))
@@ -994,7 +1270,7 @@ func _find_path_points(start: Vector2, goal: Vector2, radius: float, require_exp
 		open.remove_at(best_idx)
 		open_has.erase(current)
 		if current == goal_cell:
-			return _reconstruct_path_points(came, current, start, goal, radius, require_explored)
+			return _reconstruct_path_points(u, came, current, start, goal, radius, require_explored)
 		closed[current] = true
 		for dir: Vector2i in PATH_DIRS:
 			var nxt: Vector2i = current + dir
@@ -1002,7 +1278,7 @@ func _find_path_points(start: Vector2, goal: Vector2, radius: float, require_exp
 				continue
 			if not _path_tile_open(nxt.x, nxt.y, radius, require_explored):
 				continue
-			if not Game.can_move_between_cells(current.x, current.y, nxt.x, nxt.y):
+			if not _can_unit_move_between_cells(u, current.x, current.y, nxt.x, nxt.y):
 				continue
 			var step_cost: float = 1.0
 			var cand_g: float = g_cost.get(current, INF) + step_cost
@@ -1016,7 +1292,7 @@ func _find_path_points(start: Vector2, goal: Vector2, radius: float, require_exp
 				open_has[nxt] = true
 	return null
 
-func _reconstruct_path_points(came: Dictionary, current: Vector2i, start: Vector2, goal: Vector2, radius: float, require_explored: bool = false):
+func _reconstruct_path_points(u: Unit, came: Dictionary, current: Vector2i, start: Vector2, goal: Vector2, radius: float, require_explored: bool = false):
 	var cells: Array[Vector2i] = [current]
 	while came.has(current):
 		var prev: Vector2i = came[current]
@@ -1027,9 +1303,9 @@ func _reconstruct_path_points(came: Dictionary, current: Vector2i, start: Vector
 		pts.append(Vector2(cells[i].x + 0.5, cells[i].y + 0.5))
 	if pts.is_empty() or pts[pts.size() - 1].distance_to(goal) > 0.05:
 		pts.append(goal)
-	return _simplify_path_points(start, pts, radius, require_explored)
+	return _simplify_path_points(u, start, pts, radius, require_explored)
 
-func _simplify_path_points(start: Vector2, pts: Array[Vector2], radius: float, require_explored: bool = false) -> Array[Vector2]:
+func _simplify_path_points(u: Unit, start: Vector2, pts: Array[Vector2], radius: float, require_explored: bool = false) -> Array[Vector2]:
 	if pts.is_empty():
 		return pts
 	var out: Array[Vector2] = []
@@ -1037,14 +1313,14 @@ func _simplify_path_points(start: Vector2, pts: Array[Vector2], radius: float, r
 	var idx: int = 0
 	while idx < pts.size():
 		var furthest: int = idx
-		while furthest + 1 < pts.size() and _ground_segment_clear(anchor, pts[furthest + 1], radius, require_explored):
+		while furthest + 1 < pts.size() and _ground_segment_clear(u, anchor, pts[furthest + 1], radius, require_explored):
 			furthest += 1
 		out.append(pts[furthest])
 		anchor = pts[furthest]
 		idx = furthest + 1
 	return out
 
-func _ground_segment_clear(a: Vector2, b: Vector2, radius: float, require_explored: bool = false) -> bool:
+func _ground_segment_clear(u: Unit, a: Vector2, b: Vector2, radius: float, require_explored: bool = false) -> bool:
 	var len: float = a.distance_to(b)
 	if len <= 0.0001:
 		if require_explored and not Game.fexp(clampi(int(b.x), 0, Game.MAP_COLS - 1), clampi(int(b.y), 0, Game.MAP_ROWS - 1)):
@@ -1056,7 +1332,7 @@ func _ground_segment_clear(a: Vector2, b: Vector2, radius: float, require_explor
 		var p: Vector2 = a.lerp(b, float(i) / float(steps))
 		if require_explored and not Game.fexp(clampi(int(p.x), 0, Game.MAP_COLS - 1), clampi(int(p.y), 0, Game.MAP_ROWS - 1)):
 			return false
-		if not _ground_clear_at_radius(p.x, p.y, radius) or not Game.can_move_between_points(last.x, last.y, p.x, p.y):
+		if not _ground_clear_at_radius(p.x, p.y, radius) or not _can_unit_move_between_points(u, last.x, last.y, p.x, p.y):
 			return false
 		last = p
 	return true
@@ -1077,6 +1353,7 @@ func _path_heuristic(a: Vector2i, b: Vector2i) -> float:
 func _update_units(dt: float) -> void:
 	for u: Unit in Game.get_units():
 		var super_tank := _super_tank_cheat_applies(u)
+		var super_speed: bool = _super_speed_cheat_applies(u)
 		if super_tank:
 			u.supplies = u.max_supplies
 		if u.consumes_supplies and not super_tank:
@@ -1139,7 +1416,7 @@ func _update_units(dt: float) -> void:
 			var max_by_sup: float = dist if super_tank or not u.consumes_supplies else u.supplies / Game.SUP_PER_UNIT
 			var hp_ratio: float = u.hp / u.max_hp if u.max_hp > 0 else 1.0
 			var terrain_speed_mul: float = Game.move_speed_mult_at(u.gx, u.gy)
-			var speed_mul := Game.SUPER_TANK_SPEED_MUL if super_tank else 1.0
+			var speed_mul := Game.SUPER_TANK_SPEED_MUL if super_speed else 1.0
 			var travel := minf(dist, minf(u.speed * speed_mul * hp_ratio * terrain_speed_mul * dt, max_by_sup))
 			if travel <= 0:
 				if u.consumes_supplies and not super_tank: u.supplies = 0.0
@@ -1245,10 +1522,10 @@ func _sep(a: Unit, b: Unit) -> void:
 	var s := (min_d - d) * 0.5
 	a.gx -= dx * s; a.gy -= dy * s
 	b.gx += dx * s; b.gy += dy * s
-	if not Game.can_move_between_points(ax0, ay0, a.gx, a.gy):
+	if not _can_unit_move_between_points(a, ax0, ay0, a.gx, a.gy):
 		a.gx = ax0
 		a.gy = ay0
-	if not Game.can_move_between_points(bx0, by0, b.gx, b.gy):
+	if not _can_unit_move_between_points(b, bx0, by0, b.gx, b.gy):
 		b.gx = bx0
 		b.gy = by0
 	_clamp_unit(a); _clamp_unit(b)
@@ -1264,12 +1541,14 @@ func _update_combat(_dt: float) -> void:
 		var attack_range: float = _unit_attack_range(tank)
 		var tgt: Unit = _get_valid_attack_target(tank)
 		var attack_point: Variant = null
-		if tgt != null and (_unit_distance(tank, tgt) > attack_range or not _unit_can_see_hostile(tank, tgt)):
+		if tgt != null and (_unit_distance(tank, tgt) > attack_range or not _unit_can_see_hostile(tank, tgt) or not _unit_can_fire_at_target(tank, tgt)):
 			tgt = null
 		if tgt == null:
 			attack_point = _get_valid_attack_point(tank)
 		if tgt == null and attack_point == null:
 			tgt = _nearest_visible_hostile(tank, attack_range)
+			if tgt != null and not _unit_can_fire_at_target(tank, tgt):
+				tgt = null
 		if tgt == null and attack_point == null:
 			continue
 		var fire_point: Vector2
@@ -1277,7 +1556,7 @@ func _update_combat(_dt: float) -> void:
 			fire_point = Vector2(tgt.gx, tgt.gy)
 		else:
 			fire_point = attack_point
-			if Vector2(tank.gx, tank.gy).distance_to(fire_point) > attack_range:
+			if Vector2(tank.gx, tank.gy).distance_to(fire_point) > attack_range or not _unit_can_fire_at_point(tank, fire_point):
 				continue
 		var dx: float = fire_point.x - tank.gx
 		var dy: float = fire_point.y - tank.gy
@@ -1309,6 +1588,12 @@ func _update_combat(_dt: float) -> void:
 			"damage": tank.attack_damage,
 			"target": tgt,
 		}
+		if tank is MortarSquad:
+			shell["speed"] = Game.MORTAR_SHELL_SPEED
+			shell["arc_base"] = Game.MORTAR_SHELL_ARC_BASE
+			shell["arc_per_unit"] = Game.MORTAR_SHELL_ARC_PER_UNIT
+			shell["arc_min"] = Game.MORTAR_SHELL_ARC_MIN
+			shell["arc_max"] = Game.MORTAR_SHELL_ARC_MAX
 		if tgt == null and tank.attack_point_hits_bridge and tank.attack_point_tile != Vector2i(-1, -1):
 			shell["bridge_tile"] = tank.attack_point_tile
 		overlay.fire_shell(shell)
@@ -1450,7 +1735,7 @@ func _update_enemy_ai() -> void:
 		if u.faction != Game.ENEMY or not (u is Tank) or u.hp <= 0: continue
 		var attack_range: float = _unit_attack_range(u)
 		var tgt: Unit = _nearest_visible_hostile(u, attack_range)
-		if tgt != null:
+		if tgt != null and _unit_can_fire_at_target(u, tgt):
 			_clear_move_goal(u)
 		else:
 			var seek_range: float = maxf(Game.ENEMY_SEEK_R, _unit_vision_radius(u))
@@ -1481,8 +1766,9 @@ func _spawn_enemies() -> void:
 
 func _spawn_starting_depot() -> void:
 	var depot := SupplyDepotScene.instantiate() as SupplyDepot
-	depot.grid_col = int(Game.MAP_COLS * 0.5) - (depot.grid_w / 2)
-	depot.grid_row = int(Game.MAP_ROWS * 0.5) - (depot.grid_h / 2)
+	var start_pos: Vector2i = Game.starting_depot_grid_pos()
+	depot.grid_col = start_pos.x
+	depot.grid_row = start_pos.y
 	depot.faction = Game.PLAYER
 	depot.entity_id = Game.next_id
 	Game.next_id += 1
@@ -1497,6 +1783,7 @@ func _spawn_starting_depot() -> void:
 func _refresh_ui() -> void:
 	hud.set_unit_catalog_supply(_player_supply_total())
 	hud.set_tank_queue_status(_tank_build_queue, _tank_build_progress(), _tank_build_waiting_spawn, _tank_build_paused)
+	hud.set_mortar_queue_status(_mortar_build_queue, _mortar_build_progress(), _mortar_build_waiting_spawn, _mortar_build_paused)
 	var ui_sig := _ui_signature()
 	if ui_sig == _last_ui_sig:
 		return
@@ -1511,13 +1798,19 @@ func _refresh_ui() -> void:
 	hud.reset_selection(); hud.reset_unit_panel()
 
 func _super_tank_cheat_applies(u: Unit) -> bool:
-	return Game.cheat_super_tanks and u is Tank and u.faction == Game.PLAYER
+	return Game.cheat_super_tanks and u is Tank and not (u is MortarSquad) and u.faction == Game.PLAYER
+
+func _super_speed_cheat_applies(u: Unit) -> bool:
+	return Game.cheat_super_tanks and u.faction == Game.PLAYER and u.movable
 
 func _instant_unit_production_active() -> bool:
 	return Game.cheat_super_tanks
 
 func _effective_tank_build_time() -> float:
 	return 0.0 if _instant_unit_production_active() else TANK_BUILD_TIME
+
+func _effective_mortar_build_time() -> float:
+	return 0.0 if _instant_unit_production_active() else MORTAR_BUILD_TIME
 
 func _flush_instant_tank_production() -> void:
 	if not _instant_unit_production_active() or _tank_build_queue <= 0:
@@ -1533,7 +1826,7 @@ func _flush_instant_tank_production() -> void:
 				_tank_build_time_left = 0.0
 				break
 		_tank_build_time_left = 0.0
-		var spawn_ready: Dictionary = _find_tank_spawn_info()
+		var spawn_ready: Dictionary = _find_spawn_info(Game.TANK_COL_R)
 		if spawn_ready.is_empty():
 			_tank_build_waiting_spawn = true
 			_tank_build_waiting_supply = false
@@ -1548,6 +1841,35 @@ func _flush_instant_tank_production() -> void:
 		_tank_build_waiting_spawn = false
 		_tank_build_waiting_supply = false
 
+func _flush_instant_mortar_production() -> void:
+	if not _instant_unit_production_active() or _mortar_build_queue <= 0:
+		return
+	_mortar_build_paused = false
+	var safety: int = maxi(_mortar_build_queue * 2 + 2, 8)
+	while _mortar_build_queue > 0 and safety > 0:
+		safety -= 1
+		if not _mortar_build_active:
+			if not _start_next_mortar_build():
+				_mortar_build_waiting_supply = true
+				_mortar_build_waiting_spawn = false
+				_mortar_build_time_left = 0.0
+				break
+		_mortar_build_time_left = 0.0
+		var spawn_ready: Dictionary = _find_spawn_info(Game.TRUCK_COL_R)
+		if spawn_ready.is_empty():
+			_mortar_build_waiting_spawn = true
+			_mortar_build_waiting_supply = false
+			break
+		_mortar_build_waiting_spawn = false
+		_spawn_player_mortar(spawn_ready["spawn"], spawn_ready["depot"])
+		_mortar_build_queue -= 1
+		_mortar_build_active = false
+	if _mortar_build_queue <= 0:
+		_mortar_build_time_left = 0.0
+		_mortar_build_active = false
+		_mortar_build_waiting_spawn = false
+		_mortar_build_waiting_supply = false
+
 func _tank_build_progress() -> float:
 	if _tank_build_queue <= 0 or not _tank_build_active:
 		return 0.0
@@ -1555,6 +1877,14 @@ func _tank_build_progress() -> float:
 	if build_time <= 0.0:
 		return 1.0
 	return 1.0 - clampf(_tank_build_time_left / build_time, 0.0, 1.0)
+
+func _mortar_build_progress() -> float:
+	if _mortar_build_queue <= 0 or not _mortar_build_active:
+		return 0.0
+	var build_time: float = _effective_mortar_build_time()
+	if build_time <= 0.0:
+		return 1.0
+	return 1.0 - clampf(_mortar_build_time_left / build_time, 0.0, 1.0)
 
 func _ui_signature() -> String:
 	if Game.build_mode != "":

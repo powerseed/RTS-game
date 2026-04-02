@@ -15,9 +15,19 @@ const ELEV_METERS_PER_LEVEL := 10.0
 const BASE_TILE_W := 78.0
 const BASE_TILE_H := 39.0
 const BASE_SLAB  := 28.0
+const MIN_HILL_ELEV := 1
 const MAX_HILL_ELEV := 10
 const ELEV_STEP_PX := 14.0
 const START_PLAIN_RADIUS := 12.0
+const START_CORNER_MARGIN := 2
+const RIDGE_STRIKE_MIN_DEG := 18.0
+const RIDGE_STRIKE_MAX_DEG := 64.0
+const RIDGE_WARP_MAG := 9.0
+const RIDGE_PRIMARY_FREQ := 0.235
+const RIDGE_SECONDARY_FREQ := 0.121
+const MOUNTAIN_TARGET_SHARE := 0.20
+const MOUNTAIN_CENTER_X_SPAN := 0.58
+const MOUNTAIN_CENTER_Y_SPAN := 0.48
 
 var camera: Camera2D  # Set by main.gd in _ready()
 
@@ -27,6 +37,7 @@ const T_DEPOT  := "supply_depot"
 const T_AIRPORT := "airport"
 const T_TRUCK  := "supply_truck"
 const T_TANK   := "tank"
+const T_MORTAR := "mortar_squad"
 
 const PLAYER := "player"
 const ENEMY  := "enemy"
@@ -85,6 +96,12 @@ const SHELL_HIT_R      := 0.18
 const SHELL_ARC_BASE   := 10.0
 const SHELL_ARC_PER_UNIT := 2.1
 const SHELL_ARC_ELEV_BIAS := 0.18
+const MORTAR_RANGE_MUL := 2.5
+const MORTAR_SHELL_SPEED := 6.2
+const MORTAR_SHELL_ARC_BASE := 28.0
+const MORTAR_SHELL_ARC_PER_UNIT := 5.4
+const MORTAR_SHELL_ARC_MIN := 32.0
+const MORTAR_SHELL_ARC_MAX := 98.0
 const EXPLOSION_TTL    := 0.34
 const DMG_BAR_S        := 1.35
 const SUPER_TANK_SPEED_MUL := 10.0
@@ -170,9 +187,28 @@ func _ready() -> void:
 	fog_exp.resize(sz); fog_exp.fill(0)
 
 func _in_start_plain(c: int, r: int) -> bool:
-	var dx: float = (c + 0.5) - MAP_COLS * 0.5
-	var dy: float = (r + 0.5) - MAP_ROWS * 0.5
+	var center: Vector2 = starting_plain_center()
+	var dx: float = (c + 0.5) - center.x
+	var dy: float = (r + 0.5) - center.y
 	return (dx * dx + dy * dy) < START_PLAIN_RADIUS * START_PLAIN_RADIUS
+
+func starting_depot_grid_pos() -> Vector2i:
+	var depot_def: Dictionary = BLDG[T_DEPOT]
+	var depot_w: int = int(depot_def["w"])
+	return Vector2i(
+		MAP_COLS - depot_w - START_CORNER_MARGIN,
+		START_CORNER_MARGIN
+	)
+
+func starting_plain_center() -> Vector2:
+	var depot_pos: Vector2i = starting_depot_grid_pos()
+	var depot_def: Dictionary = BLDG[T_DEPOT]
+	var depot_w: int = int(depot_def["w"])
+	var depot_h: int = int(depot_def["h"])
+	return Vector2(
+		float(depot_pos.x) + float(depot_w) * 0.5,
+		float(depot_pos.y) + float(depot_h) * 0.5
+	)
 
 func _bake_tile_data() -> void:
 	var sz := MAP_COLS * MAP_ROWS
@@ -192,11 +228,8 @@ func _bake_tile_data() -> void:
 	blocked.resize(sz)
 	blocked.fill(0)
 	var river_candidates: Array[Vector2] = []
-	var mesa_candidates: Array[Vector2] = []
 	var forest_candidates: Array[Vector2] = []
 	var swamp_candidates: Array[Vector2] = []
-	var mesa_scores := PackedFloat32Array()
-	mesa_scores.resize(sz)
 	for r in range(MAP_ROWS):
 		for c in range(MAP_COLS):
 			var i := r * MAP_COLS + c
@@ -206,49 +239,25 @@ func _bake_tile_data() -> void:
 				continue
 			var nA := (noise_a.get_noise_2d(c, r) + 1.0) * 0.5
 			var nB := (noise_b.get_noise_2d(c, r) + 1.0) * 0.5
-			var nC := (noise_c.get_noise_2d(c, r) + 1.0) * 0.5
 			var nD := (noise_d.get_noise_2d(c, r) + 1.0) * 0.5
 			var nE := (noise_biome.get_noise_2d(c, r) + 1.0) * 0.5
 			var nF := (noise_biome.get_noise_2d(c + 87.0, r - 53.0) + 1.0) * 0.5
 			var nG := (noise_biome.get_noise_2d(c - 91.0, r + 67.0) + 1.0) * 0.5
-			var nM := (noise_biome.get_noise_2d(c + 143.0, r + 211.0) + 1.0) * 0.5
 			var river_south_center := _river_center_south(c)
 			var river_north_center := _river_center_north(c)
 			var river_width := 1.35 + maxf(0.0, nD - 0.42) * 1.55
 			var river_south := maxf(0.0, 1.0 - absf(r - river_south_center) / river_width)
 			var river_north := maxf(0.0, 1.0 - absf(r - river_north_center) / (river_width * 0.92))
 			var river_score := maxf(river_south, river_north)
-			var mesa_score := clampf(
-				pow(nC * 0.58 + nM * 0.42, 1.08) * (0.60 + nA * 0.40) - maxf(0.0, nD - 0.66) * 0.20,
-				0.0,
-				1.0
-			)
 			var forest_score := clampf(nF * 0.72 + nA * 0.18 + nD * 0.10, 0.0, 1.0)
 			var swamp_score := clampf((1.0 - nE) * 0.58 + nG * 0.30 + (1.0 - nB) * 0.12, 0.0, 1.0)
-			mesa_scores[i] = mesa_score
 			river_candidates.append(Vector2(river_score, i))
-			mesa_candidates.append(Vector2(mesa_score, i))
 			forest_candidates.append(Vector2(forest_score, i))
 			swamp_candidates.append(Vector2(swamp_score, i))
 	var water_mask := _select_top_mask(river_candidates, roundi(float(sz) * 0.10), blocked)
-	var mesa_mask := _select_top_mask(mesa_candidates, roundi(float(sz) * 0.20), blocked)
+	_bake_ridge_valley_mountains(blocked, roundi(float(sz) * MOUNTAIN_TARGET_SHARE))
 	var forest_mask := _select_top_mask(forest_candidates, roundi(float(sz) * 0.10), blocked)
 	var swamp_mask := _select_top_mask(swamp_candidates, roundi(float(sz) * 0.10), blocked)
-	for i in range(sz):
-		if water_mask[i] != 0:
-			tile_type[i] = Tile.WATER
-			continue
-		if mesa_mask[i] == 0:
-			continue
-		var c := i % MAP_COLS
-		var r := i / MAP_COLS
-		var nB := (noise_b.get_noise_2d(c, r) + 1.0) * 0.5
-		var mesa_norm := clampf((mesa_scores[i] - 0.30) / 0.70, 0.0, 1.0)
-		var elev := 1 + int(floor(pow(mesa_norm, 1.16) * float(MAX_HILL_ELEV - 1) + maxf(0.0, nB - 0.60) * 1.8))
-		tile_elev[i] = clampi(elev, 1, MAX_HILL_ELEV)
-		tile_type[i] = Tile.HILL
-	_smooth_elevation_field(mesa_mask)
-	_limit_elevation_steps(mesa_mask)
 	for r in range(MAP_ROWS):
 		for c in range(MAP_COLS):
 			var i := r * MAP_COLS + c
@@ -263,7 +272,7 @@ func _bake_tile_data() -> void:
 				tile_type[i] = Tile.SWAMP
 			else:
 				tile_type[i] = Tile.GRASS
-	_bake_ramps()
+	tile_ramp.fill(Ramp.NONE)
 	_bake_bridges()
 
 func _bake_bridges() -> void:
@@ -373,7 +382,7 @@ func _smooth_elevation_field(mesa_mask: PackedByteArray) -> void:
 						count += 1
 				var avg := roundi(float(total) / float(count))
 				var cur := int(tile_elev[i])
-				next[i] = clampi(maxi(1, int(roundi(lerpf(float(cur), float(avg), 0.34)))), 1, MAX_HILL_ELEV)
+				next[i] = clampi(maxi(MIN_HILL_ELEV, int(roundi(lerpf(float(cur), float(avg), 0.34)))), MIN_HILL_ELEV, MAX_HILL_ELEV)
 		tile_elev = next
 
 func _limit_elevation_steps(mesa_mask: PackedByteArray) -> void:
@@ -428,6 +437,127 @@ func _score_desc(a: Vector2, b: Vector2) -> bool:
 	if not is_equal_approx(a.x, b.x):
 		return a.x > b.x
 	return a.y > b.y
+
+func _bake_ridge_valley_mountains(blocked: PackedByteArray, target: int) -> void:
+	if target <= 0:
+		return
+	var scores: PackedFloat32Array = _build_ridge_valley_scores(blocked)
+	scores = _blur_score_field(scores, blocked)
+	scores = _blur_score_field(scores, blocked)
+	var candidates: Array[Vector2] = []
+	for i in range(MAP_COLS * MAP_ROWS):
+		if blocked[i] != 0:
+			continue
+		candidates.append(Vector2(scores[i], i))
+	if candidates.is_empty():
+		return
+	candidates.sort_custom(Callable(self, "_score_desc"))
+	var target_tiles: int = mini(target, candidates.size())
+	if target_tiles <= 0:
+		return
+	var cutoff_score: float = float(candidates[target_tiles - 1].x)
+	var score_span: float = maxf(0.001, 1.0 - cutoff_score)
+	for cand: Vector2 in candidates:
+		var idx: int = int(cand.y)
+		if blocked[idx] != 0:
+			continue
+		var score: float = float(cand.x)
+		if score < cutoff_score:
+			break
+		var c: int = idx % MAP_COLS
+		var r: int = int(idx / MAP_COLS)
+		var height_t: float = clampf((score - cutoff_score) / score_span, 0.0, 1.0)
+		var uplift_t: float = clampf((_mountain_uplift(c, r) - 0.28) / 0.72, 0.0, 1.0)
+		var ridge_t: float = clampf(pow(height_t, 0.68) * 0.78 + uplift_t * 0.22, 0.0, 1.0)
+		var elev: int = clampi(1 + int(round(ridge_t * float(MAX_HILL_ELEV - 1))), MIN_HILL_ELEV, MAX_HILL_ELEV)
+		tile_elev[idx] = maxi(tile_elev[idx], elev)
+		blocked[idx] = 1
+
+func _build_ridge_valley_scores(blocked: PackedByteArray) -> PackedFloat32Array:
+	var scores: PackedFloat32Array = PackedFloat32Array()
+	scores.resize(MAP_COLS * MAP_ROWS)
+	scores.fill(0.0)
+	for r in range(MAP_ROWS):
+		for c in range(MAP_COLS):
+			var i: int = r * MAP_COLS + c
+			if blocked[i] != 0:
+				continue
+			scores[i] = _ridge_valley_score(c, r)
+	return scores
+
+func _blur_score_field(scores: PackedFloat32Array, blocked: PackedByteArray) -> PackedFloat32Array:
+	var next: PackedFloat32Array = PackedFloat32Array()
+	next.resize(scores.size())
+	next.fill(0.0)
+	for r in range(MAP_ROWS):
+		for c in range(MAP_COLS):
+			var i: int = r * MAP_COLS + c
+			if blocked[i] != 0:
+				continue
+			var accum: float = float(scores[i]) * 4.0
+			var weight: float = 4.0
+			for dir: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var nc: int = c + dir.x
+				var nr: int = r + dir.y
+				if nc < 0 or nr < 0 or nc >= MAP_COLS or nr >= MAP_ROWS:
+					continue
+				var ni: int = nr * MAP_COLS + nc
+				if blocked[ni] != 0:
+					continue
+				accum += float(scores[ni])
+				weight += 1.0
+			for dir_diag: Vector2i in [Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]:
+				var dc: int = c + dir_diag.x
+				var dr: int = r + dir_diag.y
+				if dc < 0 or dr < 0 or dc >= MAP_COLS or dr >= MAP_ROWS:
+					continue
+				var di: int = dr * MAP_COLS + dc
+				if blocked[di] != 0:
+					continue
+				accum += float(scores[di]) * 0.6
+				weight += 0.6
+			next[i] = accum / maxf(weight, 0.001)
+	return next
+
+func _mountain_uplift(c: int, r: int) -> float:
+	var broad_a: float = (noise_biome.get_noise_2d(c * 0.30 - 203.0, r * 0.30 + 149.0) + 1.0) * 0.5
+	var broad_b: float = (noise_c.get_noise_2d(c * 0.18 + 61.0, r * 0.18 - 171.0) + 1.0) * 0.5
+	var center_bias: float = _mountain_center_bias(c, r)
+	return clampf((broad_a * 0.58 + broad_b * 0.42) * center_bias, 0.0, 1.0)
+
+func _mountain_center_bias(c: int, r: int) -> float:
+	var nx: float = ((float(c) + 0.5) / float(MAP_COLS) - 0.5) / MOUNTAIN_CENTER_X_SPAN
+	var ny: float = ((float(r) + 0.5) / float(MAP_ROWS) - 0.5) / MOUNTAIN_CENTER_Y_SPAN
+	var dist2: float = nx * nx + ny * ny
+	var core: float = clampf(1.0 - dist2, 0.0, 1.0)
+	var edge_soften: float = pow(core, 0.72)
+	var lobe_noise: float = (noise_a.get_noise_2d(c * 0.16 - 19.0, r * 0.16 + 37.0) + 1.0) * 0.5
+	return clampf(edge_soften * (0.80 + lobe_noise * 0.20), 0.0, 1.0)
+
+func _ridge_valley_score(c: int, r: int) -> float:
+	var sx: float = float(c)
+	var sy: float = float(r)
+	var warp_x: float = noise_a.get_noise_2d(sx * 0.45 + 47.0, sy * 0.45 - 63.0) * RIDGE_WARP_MAG
+	var warp_y: float = noise_b.get_noise_2d(sx * 0.45 - 29.0, sy * 0.45 + 71.0) * RIDGE_WARP_MAG
+	var px: float = sx + warp_x
+	var py: float = sy + warp_y
+	var strike_t: float = (noise_biome.get_noise_2d(sx * 0.22 + 131.0, sy * 0.22 - 97.0) + 1.0) * 0.5
+	var strike_angle: float = deg_to_rad(lerpf(RIDGE_STRIKE_MIN_DEG, RIDGE_STRIKE_MAX_DEG, strike_t))
+	var strike_cos: float = cos(strike_angle)
+	var strike_sin: float = sin(strike_angle)
+	var along: float = px * strike_cos + py * strike_sin
+	var across: float = -px * strike_sin + py * strike_cos
+	var primary_phase: float = across * RIDGE_PRIMARY_FREQ + noise_c.get_noise_2d(px * 0.28 + 13.0, py * 0.28 - 21.0) * 2.4
+	var secondary_phase: float = across * RIDGE_SECONDARY_FREQ + along * 0.038 + noise_d.get_noise_2d(px * 0.19 - 77.0, py * 0.19 + 41.0) * 1.8
+	var primary_ridge: float = pow(clampf(1.0 - absf(sin(primary_phase)), 0.0, 1.0), 2.6)
+	var secondary_ridge: float = pow(clampf(1.0 - absf(sin(secondary_phase)), 0.0, 1.0), 2.0)
+	var ridge_strength: float = maxf(primary_ridge, secondary_ridge * 0.82)
+	var uplift: float = _mountain_uplift(c, r)
+	var continuity: float = clampf(0.55 + ((noise_a.get_noise_2d(px * 0.16 + 211.0, py * 0.16 - 53.0) + 1.0) * 0.5) * 0.45, 0.0, 1.0)
+	var erosion_noise: float = (noise_b.get_noise_2d(along * 0.16 - 117.0, across * 0.16 + 83.0) + 1.0) * 0.5
+	var erosion: float = clampf(1.0 - maxf(0.0, 0.56 - erosion_noise) * 1.25, 0.35, 1.0)
+	var shoulder: float = clampf(0.25 + ridge_strength * 0.75, 0.0, 1.0)
+	return clampf(pow(uplift, 1.2) * shoulder * continuity * erosion, 0.0, 1.0)
 
 func _shrink_tableland_edges() -> void:
 	var next := tile_elev.duplicate()
@@ -808,7 +938,7 @@ func surface_elev_units_at(wx: float, wy: float) -> float:
 func surface_lift_at(wx: float, wy: float) -> float:
 	return elev_units_to_lift(surface_elev_units_at(wx, wy))
 
-func can_move_between_cells(c1: int, r1: int, c2: int, r2: int) -> bool:
+func can_move_between_cells(c1: int, r1: int, c2: int, r2: int, max_climb_up_steps: int = 0) -> bool:
 	if not passable(c1, r1) or not passable(c2, r2):
 		return false
 	var dc := c2 - c1
@@ -821,11 +951,13 @@ func can_move_between_cells(c1: int, r1: int, c2: int, r2: int) -> bool:
 		return true
 	if abs(e1 - e2) != 1:
 		return false
+	if max_climb_up_steps > 0 and abs(e2 - e1) <= 1:
+		return true
 	if e2 > e1:
 		return _ramp_dir_from_delta(-dc, -dr) == get_ramp(c2, r2)
 	return _ramp_dir_from_delta(dc, dr) == get_ramp(c1, r1)
 
-func can_move_between_points(ax: float, ay: float, bx: float, by: float) -> bool:
+func can_move_between_points(ax: float, ay: float, bx: float, by: float, max_climb_up_steps: int = 0) -> bool:
 	var c1 := clampi(int(ax), 0, MAP_COLS - 1)
 	var r1 := clampi(int(ay), 0, MAP_ROWS - 1)
 	var c2 := clampi(int(bx), 0, MAP_COLS - 1)
@@ -838,13 +970,13 @@ func can_move_between_points(ax: float, ay: float, bx: float, by: float) -> bool
 		return false
 	if dc != 0 and dr != 0:
 		return (
-			can_move_between_cells(c1, r1, c1 + dc, r1) and
-			can_move_between_cells(c1 + dc, r1, c2, r2)
+			can_move_between_cells(c1, r1, c1 + dc, r1, max_climb_up_steps) and
+			can_move_between_cells(c1 + dc, r1, c2, r2, max_climb_up_steps)
 		) or (
-			can_move_between_cells(c1, r1, c1, r1 + dr) and
-			can_move_between_cells(c1, r1 + dr, c2, r2)
+			can_move_between_cells(c1, r1, c1, r1 + dr, max_climb_up_steps) and
+			can_move_between_cells(c1, r1 + dr, c2, r2, max_climb_up_steps)
 		)
-	return can_move_between_cells(c1, r1, c2, r2)
+	return can_move_between_cells(c1, r1, c2, r2, max_climb_up_steps)
 
 # ── Coordinate helpers (Camera2D-based) ──────────────────────────────────────
 func grid_to_world(gx: float, gy: float, gz: float = 0.0) -> Vector2:

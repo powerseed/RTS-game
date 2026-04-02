@@ -8,6 +8,8 @@ signal train_tank_requested
 signal unit_build_requested(unit_type: String, amount: int)
 signal tank_queue_pause_requested
 signal tank_queue_cancel_requested
+signal mortar_queue_pause_requested
+signal mortar_queue_cancel_requested
 
 const MiniMapScript := preload("res://scripts/minimap.gd")
 const UnitIconScript := preload("res://scripts/unit_icon.gd")
@@ -57,6 +59,14 @@ var tank_cancel_button: Button
 var tank_queue_bar: ProgressBar
 var tank_queue_count_label: Label
 var _tank_count_text_guard: bool = false
+var mortar_count_input: SpinBox
+var mortar_count_line_edit: LineEdit
+var mortar_build_button: Button
+var mortar_pause_button: Button
+var mortar_cancel_button: Button
+var mortar_queue_bar: ProgressBar
+var mortar_queue_count_label: Label
+var _mortar_count_text_guard: bool = false
 
 # ── colours ──────────────────────────────────────────────────────────────────
 const C_PANEL   := Color(0.204, 0.137, 0.075, 0.80)
@@ -123,6 +133,8 @@ func _scale_all_ui_fonts() -> void:
 	_scale_control_font_recursive(self)
 	if tank_queue_bar != null:
 		tank_queue_bar.custom_minimum_size.y = 32.0
+	if mortar_queue_bar != null:
+		mortar_queue_bar.custom_minimum_size.y = 32.0
 	if prod_progress != null:
 		prod_progress.custom_minimum_size.y = 18.0
 
@@ -170,16 +182,19 @@ func _create_unit_catalog_panel() -> void:
 	root.add_child(_build_unit_category(
 		"Ground Vehicles",
 		"Tracked and wheeled combat units.",
-		true
+		true,
+		false
 	))
 	root.add_child(_build_unit_category(
 		"Ground Troops",
-		"No units available yet.",
-		false
+		"Infantry and support squads.",
+		false,
+		true
 	))
 	root.add_child(_build_unit_category(
 		"Aerial Units",
 		"No units available yet.",
+		false,
 		false
 	))
 	add_child(unit_catalog_panel)
@@ -205,7 +220,7 @@ func _build_building_category() -> Control:
 	vbox.add_child(_build_airport_row())
 	return panel
 
-func _build_unit_category(title_text: String, body_text: String, include_tank: bool) -> Control:
+func _build_unit_category(title_text: String, body_text: String, include_tank: bool, include_mortar: bool) -> Control:
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _panel_style(14))
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -225,6 +240,8 @@ func _build_unit_category(title_text: String, body_text: String, include_tank: b
 	vbox.add_child(body)
 	if include_tank:
 		vbox.add_child(_build_tank_row())
+	if include_mortar:
+		vbox.add_child(_build_mortar_row())
 	return panel
 
 func _build_airport_row() -> Control:
@@ -347,6 +364,93 @@ func _build_tank_row() -> Control:
 	tank_queue_count_label.add_theme_font_size_override("font_size", 13)
 	tank_queue_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tank_queue_bar.add_child(tank_queue_count_label)
+	return wrap
+
+func _build_mortar_row() -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 4)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	var icon := UnitIconScript.new() as UnitIcon
+	icon.unit_type = Game.T_MORTAR
+	row.add_child(icon)
+	var name := Label.new()
+	name.text = "Mortar Squad (10 sec)"
+	name.custom_minimum_size = Vector2(152, 0)
+	name.add_theme_color_override("font_color", C_TEXT)
+	name.add_theme_font_size_override("font_size", 14)
+	row.add_child(name)
+	mortar_count_input = SpinBox.new()
+	mortar_count_input.min_value = 1
+	mortar_count_input.max_value = 99999
+	mortar_count_input.step = 1
+	mortar_count_input.rounded = true
+	mortar_count_input.value = 1
+	mortar_count_input.custom_minimum_size = Vector2(72, 0)
+	mortar_count_line_edit = mortar_count_input.get_line_edit()
+	if mortar_count_line_edit != null:
+		mortar_count_line_edit.text = "1"
+		mortar_count_line_edit.max_length = 5
+		mortar_count_line_edit.text_changed.connect(_on_mortar_count_text_changed)
+		mortar_count_line_edit.focus_exited.connect(_normalize_mortar_count_input)
+	row.add_child(mortar_count_input)
+	mortar_build_button = Button.new()
+	mortar_build_button.text = "Build"
+	mortar_build_button.focus_mode = Control.FOCUS_NONE
+	mortar_build_button.add_theme_stylebox_override("normal", _btn_style())
+	mortar_build_button.add_theme_stylebox_override("hover", _btn_style())
+	mortar_build_button.add_theme_stylebox_override("pressed", _btn_style_armed())
+	mortar_build_button.add_theme_stylebox_override("focus", _btn_style())
+	mortar_build_button.add_theme_color_override("font_color", C_TEXT)
+	mortar_build_button.add_theme_font_size_override("font_size", 13)
+	mortar_build_button.pressed.connect(_on_build_mortar_pressed)
+	row.add_child(mortar_build_button)
+	mortar_pause_button = Button.new()
+	mortar_pause_button.text = "Pause"
+	mortar_pause_button.focus_mode = Control.FOCUS_NONE
+	mortar_pause_button.add_theme_stylebox_override("normal", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	mortar_pause_button.add_theme_stylebox_override("hover", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	mortar_pause_button.add_theme_stylebox_override("pressed", _btn_style_tinted(C_PAUSE_BD, C_PAUSE_BD))
+	mortar_pause_button.add_theme_stylebox_override("focus", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	mortar_pause_button.add_theme_color_override("font_color", C_PAUSE_TX)
+	mortar_pause_button.add_theme_font_size_override("font_size", 13)
+	mortar_pause_button.disabled = true
+	mortar_pause_button.pressed.connect(_on_pause_mortar_queue_pressed)
+	row.add_child(mortar_pause_button)
+	mortar_cancel_button = Button.new()
+	mortar_cancel_button.text = "Cancel"
+	mortar_cancel_button.focus_mode = Control.FOCUS_NONE
+	mortar_cancel_button.add_theme_stylebox_override("normal", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	mortar_cancel_button.add_theme_stylebox_override("hover", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	mortar_cancel_button.add_theme_stylebox_override("pressed", _btn_style_tinted(C_CANCEL_BD, C_CANCEL_BD))
+	mortar_cancel_button.add_theme_stylebox_override("focus", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	mortar_cancel_button.add_theme_color_override("font_color", C_CANCEL_TX)
+	mortar_cancel_button.add_theme_font_size_override("font_size", 13)
+	mortar_cancel_button.disabled = true
+	mortar_cancel_button.pressed.connect(_on_cancel_mortar_queue_pressed)
+	row.add_child(mortar_cancel_button)
+	wrap.add_child(row)
+	mortar_queue_bar = ProgressBar.new()
+	mortar_queue_bar.max_value = 1.0
+	mortar_queue_bar.show_percentage = false
+	mortar_queue_bar.value = 0.0
+	mortar_queue_bar.custom_minimum_size = Vector2(0, 22)
+	mortar_queue_bar.add_theme_stylebox_override("background", _bar_bg_style())
+	mortar_queue_bar.add_theme_stylebox_override("fill", _bar_style(C_ACCENT, C_SUP_B))
+	wrap.add_child(mortar_queue_bar)
+	mortar_queue_count_label = Label.new()
+	mortar_queue_count_label.text = ""
+	mortar_queue_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mortar_queue_count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	mortar_queue_count_label.anchor_right = 1.0
+	mortar_queue_count_label.anchor_bottom = 1.0
+	mortar_queue_count_label.add_theme_color_override("font_color", Color(0.180, 0.125, 0.071))
+	mortar_queue_count_label.add_theme_color_override("font_outline_color", C_TEXT)
+	mortar_queue_count_label.add_theme_constant_override("outline_size", 2)
+	mortar_queue_count_label.add_theme_font_size_override("font_size", 13)
+	mortar_queue_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mortar_queue_bar.add_child(mortar_queue_count_label)
 	return wrap
 
 func _create_minimap_panel() -> void:
@@ -677,6 +781,39 @@ func _set_tank_count_value(value: int) -> void:
 		tank_count_line_edit.text = str(clamped_value)
 	_tank_count_text_guard = false
 
+func _on_mortar_count_text_changed(new_text: String) -> void:
+	if _mortar_count_text_guard:
+		return
+	var digits_only := _digits_only_text(new_text)
+	if digits_only.length() > 5:
+		digits_only = digits_only.substr(0, 5)
+	if digits_only != new_text and mortar_count_line_edit != null:
+		_mortar_count_text_guard = true
+		mortar_count_line_edit.text = digits_only
+		_mortar_count_text_guard = false
+	if digits_only.is_empty():
+		return
+	var next_value: int = clampi(int(digits_only), int(mortar_count_input.min_value), int(mortar_count_input.max_value))
+	_set_mortar_count_value(next_value)
+
+func _normalize_mortar_count_input() -> void:
+	if mortar_count_input == null:
+		return
+	if mortar_count_line_edit == null:
+		_set_mortar_count_value(maxi(1, int(round(mortar_count_input.value))))
+		return
+	var digits_only := _digits_only_text(mortar_count_line_edit.text)
+	var next_value: int = 1 if digits_only.is_empty() else clampi(int(digits_only), int(mortar_count_input.min_value), int(mortar_count_input.max_value))
+	_set_mortar_count_value(next_value)
+
+func _set_mortar_count_value(value: int) -> void:
+	var clamped_value: int = clampi(value, int(mortar_count_input.min_value), int(mortar_count_input.max_value))
+	_mortar_count_text_guard = true
+	mortar_count_input.value = clamped_value
+	if mortar_count_line_edit != null:
+		mortar_count_line_edit.text = str(clamped_value)
+	_mortar_count_text_guard = false
+
 func _digits_only_text(raw_text: String) -> String:
 	var digits_only := ""
 	for i in range(raw_text.length()):
@@ -690,11 +827,22 @@ func _on_build_tank_pressed() -> void:
 	var amount: int = maxi(1, int(round(tank_count_input.value)))
 	unit_build_requested.emit(Game.T_TANK, amount)
 
+func _on_build_mortar_pressed() -> void:
+	_normalize_mortar_count_input()
+	var amount: int = maxi(1, int(round(mortar_count_input.value)))
+	unit_build_requested.emit(Game.T_MORTAR, amount)
+
 func _on_pause_tank_queue_pressed() -> void:
 	tank_queue_pause_requested.emit()
 
 func _on_cancel_tank_queue_pressed() -> void:
 	tank_queue_cancel_requested.emit()
+
+func _on_pause_mortar_queue_pressed() -> void:
+	mortar_queue_pause_requested.emit()
+
+func _on_cancel_mortar_queue_pressed() -> void:
+	mortar_queue_cancel_requested.emit()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PUBLIC API (called from main.gd)
@@ -731,6 +879,25 @@ func set_tank_queue_status(queue_count: int, progress: float, waiting_for_space:
 		return
 	tank_queue_bar.value = clampf(progress, 0.0, 1.0)
 	tank_queue_count_label.text = str(queue_count)
+
+func set_mortar_queue_status(queue_count: int, progress: float, waiting_for_space: bool, paused: bool) -> void:
+	if mortar_queue_bar == null or mortar_queue_count_label == null:
+		return
+	if mortar_pause_button != null:
+		mortar_pause_button.disabled = queue_count <= 0
+		mortar_pause_button.text = "Resume" if paused and queue_count > 0 else "Pause"
+	if mortar_cancel_button != null:
+		mortar_cancel_button.disabled = queue_count <= 0
+	if queue_count <= 0:
+		mortar_queue_bar.value = 0.0
+		mortar_queue_count_label.text = ""
+		return
+	if waiting_for_space and not paused:
+		mortar_queue_bar.value = 1.0
+		mortar_queue_count_label.text = str(queue_count)
+		return
+	mortar_queue_bar.value = clampf(progress, 0.0, 1.0)
+	mortar_queue_count_label.text = str(queue_count)
 
 func set_sel_pill(txt: String) -> void:
 	lbl_sel_pill.text = txt
@@ -834,10 +1001,11 @@ func show_units(us: Array[Node2D]) -> void:
 	if us.size() == 1:
 		var u: Unit = us[0] as Unit
 		var is_truck: bool = u is Truck
-		var ul: String = "Supply Truck" if is_truck else "Tank"
+		var is_mortar: bool = u is MortarSquad
+		var ul: String = "Supply Truck" if is_truck else ("Mortar Squad" if is_mortar else "Tank")
 		var sl: String = "Cargo Load" if is_truck else "Supplies"
 		var sp: String = "Load: " if is_truck else "Supplies: "
-		var uc: String = "Mobile logistics vehicle. Its supplies bar shows cargo only." if is_truck else "Armored vehicle. Supplies consumed as it moves. Auto-fires on enemies."
+		var uc: String = "Mobile logistics vehicle. Its supplies bar shows cargo only." if is_truck else ("Infantry fire support squad. Longer-ranged indirect fire with lighter durability." if is_mortar else "Armored vehicle. Supplies consumed as it moves. Auto-fires on enemies.")
 		lbl_sel_pill.text = ul + " #" + str(u.entity_id)
 		lbl_sel_detail.text = "Movable unit selected. Right-click the map to move it. Ctrl+Right-click force-attacks ground."
 		lbl_unit_pill.text = ul + " selected"
@@ -854,14 +1022,16 @@ func show_units(us: Array[Node2D]) -> void:
 		return
 	# multiple units
 	var th := 0.0; var tmh := 0.0; var ts := 0.0; var tms := 0.0
-	var tc := 0; var trc := 0
+	var tc := 0; var trc := 0; var mc := 0
 	for u_node in us:
 		var u: Unit = u_node as Unit
 		th += u.hp; tmh += u.max_hp; ts += u.supplies; tms += u.max_supplies
-		if u is Tank: tc += 1
+		if u is MortarSquad: mc += 1
+		elif u is Tank: tc += 1
 		elif u is Truck: trc += 1
 	var label := str(us.size()) + " Units"
-	if tc == us.size(): label = str(us.size()) + " Tanks"
+	if mc == us.size(): label = str(us.size()) + " Mortar Squads"
+	elif tc == us.size(): label = str(us.size()) + " Tanks"
 	elif trc == us.size(): label = str(us.size()) + " Trucks"
 	lbl_sel_pill.text = label
 	lbl_sel_detail.text = "Movable units selected. Right-click moves the group. Ctrl+Right-click force-attacks ground."

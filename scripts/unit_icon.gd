@@ -14,6 +14,8 @@ func _draw() -> void:
 	match unit_type:
 		Game.T_AIRPORT:
 			_draw_airport_icon()
+		Game.T_MORTAR:
+			_draw_mortar_icon()
 		Game.T_TANK:
 			_draw_tank_icon()
 		_:
@@ -44,6 +46,23 @@ func _draw_tank_icon() -> void:
 	draw_circle(Vector2(size.x * 0.32, size.y * 0.76), 4.0, Color(0.271, 0.302, 0.216))
 	draw_circle(Vector2(size.x * 0.50, size.y * 0.76), 4.0, Color(0.271, 0.302, 0.216))
 	draw_circle(Vector2(size.x * 0.68, size.y * 0.76), 4.0, Color(0.271, 0.302, 0.216))
+
+func _draw_mortar_icon() -> void:
+	var base := Rect2(size.x * 0.28, size.y * 0.60, size.x * 0.34, size.y * 0.10)
+	var plate := PackedVector2Array([
+		Vector2(size.x * 0.22, size.y * 0.78),
+		Vector2(size.x * 0.48, size.y * 0.64),
+		Vector2(size.x * 0.74, size.y * 0.78),
+		Vector2(size.x * 0.48, size.y * 0.88),
+	])
+	var tube_a := Vector2(size.x * 0.46, size.y * 0.58)
+	var tube_b := Vector2(size.x * 0.68, size.y * 0.24)
+	draw_colored_polygon(plate, Color(0.286, 0.337, 0.235))
+	draw_rect(base, Color(0.514, 0.569, 0.404))
+	draw_line(tube_a, tube_b, Color(0.867, 0.910, 0.733), 4.0)
+	draw_circle(Vector2(size.x * 0.26, size.y * 0.42), 3.0, Color(0.918, 0.867, 0.671))
+	draw_circle(Vector2(size.x * 0.37, size.y * 0.36), 3.0, Color(0.918, 0.867, 0.671))
+	draw_circle(Vector2(size.x * 0.58, size.y * 0.80), 3.0, Color(0.918, 0.867, 0.671))
 
 func _draw_placeholder_icon() -> void:
 	draw_line(Vector2(size.x * 0.24, size.y * 0.24), Vector2(size.x * 0.76, size.y * 0.76), Color(0.820, 0.698, 0.431), 3.0)
