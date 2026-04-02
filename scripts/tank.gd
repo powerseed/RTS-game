@@ -61,5 +61,5 @@ func _draw() -> void:
 	# status bars
 	if sel:
 		_draw_movable_bars(sc)
-	elif status_display_until > Game.elapsed:
+	elif _should_draw_status_overlay():
 		_draw_transient_hp(sc)

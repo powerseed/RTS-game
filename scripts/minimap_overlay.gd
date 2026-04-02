@@ -41,7 +41,7 @@ func _draw_structures(mm: MiniMap) -> void:
 func _draw_units(mm: MiniMap) -> void:
 	for u_node in Game.get_units():
 		var u: Unit = u_node as Unit
-		if u == null:
+		if u == null or not u.visible:
 			continue
 		var pos := mm.grid_to_panel(u.gx, u.gy)
 		var col := C_PLAYER_UNIT if u.faction == Game.PLAYER else C_ENEMY_UNIT

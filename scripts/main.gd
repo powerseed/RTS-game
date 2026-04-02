@@ -83,6 +83,7 @@ func _process(dt: float) -> void:
 	_update_combat(dt)
 	_remove_dead()
 	_update_fog()
+	_update_player_detection_visibility()
 	_update_player_production(dt)
 	_refresh_ui()
 
@@ -1021,6 +1022,64 @@ func _terrain_height_m_at(wx: float, wy: float) -> float:
 func _eye_height_m_at(wx: float, wy: float, observer_height_m: float) -> float:
 	return _terrain_height_m_at(wx, wy) + observer_height_m
 
+func _unit_is_in_forest(u: Unit) -> bool:
+	return Game.get_tile(clampi(int(u.gx), 0, Game.MAP_COLS - 1), clampi(int(u.gy), 0, Game.MAP_ROWS - 1)) == Game.Tile.FOREST
+
+func _detection_range_for_target(base_vision_range: float, target: Unit) -> float:
+	if target.is_exposed():
+		return base_vision_range
+	if not _unit_is_in_forest(target):
+		return base_vision_range
+	return base_vision_range * Game.FOREST_CONCEALMENT * clampf(target.visibility_signature, 0.0, 1.0)
+
+func _observer_can_detect_unit(origin: Vector2, base_vision_range: float, observer_eye_height_m: float, target: Unit) -> bool:
+	var detection_range: float = _detection_range_for_target(base_vision_range, target)
+	if origin.distance_to(Vector2(target.gx, target.gy)) > detection_range:
+		return false
+	return _point_visible_from(
+		origin,
+		detection_range,
+		observer_eye_height_m,
+		Vector2(target.gx, target.gy),
+		_eye_height_m_at(target.gx, target.gy, Game.VIS_OBSERVER_HEIGHT_M))
+
+func _structure_can_detect_unit(s: Structure, target: Unit) -> bool:
+	var sx: float = s.grid_col + s.grid_w * 0.5
+	var sy: float = s.grid_row + s.grid_h * 0.5
+	return _observer_can_detect_unit(
+		Vector2(sx, sy),
+		Game.VIS_STRUCT,
+		_eye_height_m_at(sx, sy, Game.VIS_STRUCT_OBSERVER_HEIGHT_M),
+		target)
+
+func _player_can_detect_unit(target: Unit) -> bool:
+	if target.faction == Game.PLAYER or Game.cheat_reveal_all:
+		return true
+	var tc: int = clampi(int(target.gx), 0, Game.MAP_COLS - 1)
+	var tr: int = clampi(int(target.gy), 0, Game.MAP_ROWS - 1)
+	if not Game.fvis(tc, tr):
+		return false
+	for s_node in Game.get_structures():
+		var s: Structure = s_node as Structure
+		if s == null or s.faction != Game.PLAYER:
+			continue
+		if _structure_can_detect_unit(s, target):
+			return true
+	for observer in Game.get_units():
+		var unit_observer: Unit = observer as Unit
+		if unit_observer == null or unit_observer.faction != Game.PLAYER or unit_observer.hp <= 0:
+			continue
+		if _unit_can_see_hostile(unit_observer, target):
+			return true
+	return false
+
+func _update_player_detection_visibility() -> void:
+	for u_node in Game.get_units():
+		var u: Unit = u_node as Unit
+		if u == null:
+			continue
+		u.visible = true if u.faction == Game.PLAYER else _player_can_detect_unit(u)
+
 func _vision_sector_start_angle() -> float:
 	return -PI * 0.5
 
@@ -1356,10 +1415,17 @@ func _update_units(dt: float) -> void:
 		var super_speed: bool = _super_speed_cheat_applies(u)
 		if super_tank:
 			u.supplies = u.max_supplies
-		if u.consumes_supplies and not super_tank:
-			u.supplies = maxf(0.0, u.supplies - Game.SUP_IDLE_RATE * dt)
-		if u.consumes_supplies and not super_tank and u.supplies <= 0:
-			u.supplies = 0.0; continue
+			u.out_of_supply_started_at = -1.0
+		if u.consumes_supplies and not super_tank and u.idle_supply_rate > 0.0:
+			u.supplies = maxf(0.0, u.supplies - u.idle_supply_rate * dt)
+		if u.is_out_of_supply():
+			if u.out_of_supply_started_at < 0.0:
+				u.out_of_supply_started_at = Game.elapsed
+			elif Game.elapsed - u.out_of_supply_started_at >= Game.OUT_OF_SUPPLY_DEATH_S:
+				u.hp = 0.0
+				continue
+		else:
+			u.out_of_supply_started_at = -1.0
 		var attack_target: Unit = null
 		var attack_point: Variant = null
 		if _unit_can_attack(u):
@@ -1413,13 +1479,16 @@ func _update_units(dt: float) -> void:
 				_clear_move_goal(u)
 		else:
 			u.heading = Vector2(dx / dist, dy / dist)
-			var max_by_sup: float = dist if super_tank or not u.consumes_supplies else u.supplies / Game.SUP_PER_UNIT
+			var max_by_sup: float = dist
+			if not super_tank and u.consumes_supplies and u.move_supply_per_unit > 0.0:
+				max_by_sup = u.supplies / u.move_supply_per_unit
 			var hp_ratio: float = u.hp / u.max_hp if u.max_hp > 0 else 1.0
 			var terrain_speed_mul: float = Game.move_speed_mult_at(u.gx, u.gy)
 			var speed_mul := Game.SUPER_TANK_SPEED_MUL if super_speed else 1.0
 			var travel := minf(dist, minf(u.speed * speed_mul * hp_ratio * terrain_speed_mul * dt, max_by_sup))
 			if travel <= 0:
-				if u.consumes_supplies and not super_tank: u.supplies = 0.0
+				if u.consumes_supplies and not super_tank and u.move_supply_per_unit > 0.0:
+					u.supplies = 0.0
 				continue
 			var moved := _apply_ground_step(u, u.heading * travel)
 			if moved <= 0.0:
@@ -1429,8 +1498,9 @@ func _update_units(dt: float) -> void:
 					_clear_move_goal(u)
 				if u is Truck: _truck_aura(u, dt)
 				continue
-			if u.consumes_supplies and not super_tank:
-				u.supplies = maxf(0.0, u.supplies - moved * Game.SUP_PER_UNIT)
+			if u.consumes_supplies and not super_tank and u.move_supply_per_unit > 0.0:
+				u.supplies = maxf(0.0, u.supplies - moved * u.move_supply_per_unit)
+			u.exposed_until = maxf(u.exposed_until, Game.elapsed + Game.EXPOSED_TTL_S)
 		if u is Truck: _truck_aura(u, dt)
 
 func _truck_aura(truck: Truck, dt: float) -> void:
@@ -1567,12 +1637,13 @@ func _update_combat(_dt: float) -> void:
 		if not tank.attack_timer.is_stopped():
 			continue
 		var super_tank := _super_tank_cheat_applies(tank)
-		if tank.consumes_supplies and not super_tank and tank.supplies < Game.SUP_PER_SHOT:
+		if tank.consumes_supplies and not super_tank and tank.attack_supply_per_shot > 0.0 and tank.supplies < tank.attack_supply_per_shot:
 			continue
 		var atk_hp_ratio: float = tank.hp / tank.max_hp if tank.max_hp > 0 else 1.0
-		tank.attack_timer.start(Game.ATK_CD / maxf(atk_hp_ratio, 0.1))
-		if tank.consumes_supplies and not super_tank:
-			tank.supplies = maxf(0.0, tank.supplies - Game.SUP_PER_SHOT)
+		tank.attack_timer.start(tank.attack_timer.wait_time)
+		if tank.consumes_supplies and not super_tank and tank.attack_supply_per_shot > 0.0:
+			tank.supplies = maxf(0.0, tank.supplies - tank.attack_supply_per_shot)
+		tank.exposed_until = maxf(tank.exposed_until, Game.elapsed + Game.EXPOSED_TTL_S)
 		var muzzle_x: float = tank.gx + tank.heading.x * 0.34
 		var muzzle_y: float = tank.gy + tank.heading.y * 0.34
 		var muzzle_lift: float = Game.surface_lift_at(muzzle_x, muzzle_y) + 19.0
@@ -1585,7 +1656,7 @@ func _update_combat(_dt: float) -> void:
 			"sz_lift": muzzle_lift,
 			"tx": fire_point.x, "ty": fire_point.y,
 			"tz_lift": target_lift,
-			"damage": tank.attack_damage,
+			"damage": tank.attack_damage * atk_hp_ratio,
 			"target": tgt,
 		}
 		if tank is MortarSquad:
@@ -1619,14 +1690,11 @@ func _nearest_hostile(u: Unit, rng: float) -> Unit:
 
 func _unit_can_see_hostile(u: Unit, c: Unit) -> bool:
 	var vision_radius: float = _unit_vision_radius(u)
-	if _unit_distance(u, c) > vision_radius:
-		return false
-	return _point_visible_from(
+	return _observer_can_detect_unit(
 		Vector2(u.gx, u.gy),
 		vision_radius,
 		_eye_height_m_at(u.gx, u.gy, Game.VIS_OBSERVER_HEIGHT_M),
-		Vector2(c.gx, c.gy),
-		_eye_height_m_at(c.gx, c.gy, Game.VIS_OBSERVER_HEIGHT_M))
+		c)
 
 func _nearest_visible_hostile(u: Unit, rng: float) -> Unit:
 	var best: Unit = null

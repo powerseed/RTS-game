@@ -9,10 +9,12 @@ func _ready() -> void:
 	vision_radius = Game.VIS_UNIT * 0.92
 	attack_range = Game.ATK_RANGE * Game.MORTAR_RANGE_MUL
 	attack_damage = Game.ATK_DMG * 0.80
+	visibility_signature = 0.25
+	move_supply_per_unit = 0.0
 	max_climb_up_steps = 1
 	uphill_speed_mul = 0.2
 	if attack_timer != null:
-		attack_timer.wait_time = 1.45
+		attack_timer.wait_time = 2.90
 
 func get_collision_radius() -> float:
 	return Game.TRUCK_COL_R
@@ -54,5 +56,5 @@ func _draw() -> void:
 	draw_set_transform(-position, 0)
 	if sel:
 		_draw_movable_bars(sc)
-	elif status_display_until > Game.elapsed:
+	elif _should_draw_status_overlay():
 		_draw_transient_hp(sc)

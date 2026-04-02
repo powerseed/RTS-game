@@ -8,6 +8,9 @@ func _ready() -> void:
 	super._ready()
 	label = "Supply Truck"
 	consumes_supplies = false
+	move_supply_per_unit = 0.0
+	attack_supply_per_shot = 0.0
+	idle_supply_rate = 0.0
 	vision_radius = Game.VIS_TRUCK
 
 func get_collision_radius() -> float:

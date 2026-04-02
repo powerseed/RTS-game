@@ -85,6 +85,8 @@ const VIS_TRUCK        := 4.4
 const VIS_OBSERVER_HEIGHT_M := 1.7
 const VIS_STRUCT_OBSERVER_HEIGHT_M := 6.0
 const VIS_FALLBACK     := 9.0
+const FOREST_CONCEALMENT := 0.60
+const EXPOSED_TTL_S    := 3.0
 
 const ATK_RANGE        := 9.6
 const ENEMY_SEEK_R     := 12.0
@@ -98,16 +100,27 @@ const SHELL_ARC_PER_UNIT := 2.1
 const SHELL_ARC_ELEV_BIAS := 0.18
 const MORTAR_RANGE_MUL := 2.5
 const MORTAR_SHELL_SPEED := 6.2
-const MORTAR_SHELL_ARC_BASE := 28.0
-const MORTAR_SHELL_ARC_PER_UNIT := 5.4
-const MORTAR_SHELL_ARC_MIN := 32.0
-const MORTAR_SHELL_ARC_MAX := 98.0
+const MORTAR_SHELL_ARC_BASE := 44.0
+const MORTAR_SHELL_ARC_PER_UNIT := 8.2
+const MORTAR_SHELL_ARC_MIN := 52.0
+const MORTAR_SHELL_ARC_MAX := 148.0
 const EXPLOSION_TTL    := 0.34
+const OUT_OF_SUPPLY_DEATH_S := 30.0
 const DMG_BAR_S        := 1.35
 const SUPER_TANK_SPEED_MUL := 10.0
 
 const INIT_ENEMIES := [
 	{"x": 25.5, "y": 47.5, "hx": -1.0, "hy": 0.1},
+	{"x": 12.5, "y": 14.5, "hx": 0.8, "hy": 0.2},
+	{"x": 32.5, "y": 20.5, "hx": 0.2, "hy": 0.9},
+	{"x": 52.5, "y": 14.5, "hx": -0.6, "hy": 0.5},
+	{"x": 74.5, "y": 24.5, "hx": -0.9, "hy": 0.2},
+	{"x": 94.5, "y": 18.5, "hx": -0.7, "hy": 0.4},
+	{"x": 14.5, "y": 66.5, "hx": 0.8, "hy": -0.2},
+	{"x": 34.5, "y": 82.5, "hx": 0.5, "hy": -0.7},
+	{"x": 58.5, "y": 72.5, "hx": -0.2, "hy": -0.9},
+	{"x": 82.5, "y": 60.5, "hx": -0.8, "hy": -0.3},
+	{"x": 98.5, "y": 84.5, "hx": -0.6, "hy": -0.6},
 ]
 
 # ── Mutable game state ───────────────────────────────────────────────────────
@@ -1138,6 +1151,8 @@ func unit_at_screen(sx: float, sy: float) -> Node2D:
 	var best: Node2D = null
 	var best_d := 26.0
 	for u: Unit in get_units():
+		if not u.visible:
+			continue
 		var sc := world_to_screen(grid_to_world(u.gx, u.gy, u.get_lift()))
 		var d := sc.distance_to(Vector2(sx, sy))
 		if d < best_d:
