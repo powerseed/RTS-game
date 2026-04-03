@@ -51,6 +51,7 @@ func _draw() -> void:
 		38, Color(0.784, 0.663, 0.420), Color(0.616, 0.518, 0.322), Color(0.510, 0.427, 0.275))
 	# supplies bar
 	var ba := Game.grid_to_world(c + grid_w * 0.5, r + grid_h * 0.5, hp + 24)
+	_draw_structure_hp_bar(Vector2(ba.x, ba.y - 18.0), 84.0)
 	_progress_bar(ba.x - 42, ba.y, 84, ratio)
 	var font := ThemeDB.fallback_font
 	var supply_text := "%d / %d" % [roundi(stored), roundi(max_stored)]

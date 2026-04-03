@@ -3,6 +3,10 @@ extends Unit
 ## Supply truck that transports and distributes supplies to nearby units.
 
 var follow_target: Node2D = null  # unit to follow and resupply
+var construction_target: Structure = null
+var aura_query_accum_s: float = 0.0
+var next_aura_query_at: float = 0.0
+var last_aura_query_pos: Vector2 = Vector2(-99999.0, -99999.0)
 
 func _ready() -> void:
 	super._ready()

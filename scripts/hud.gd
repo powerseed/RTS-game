@@ -51,6 +51,9 @@ var minimap_view: MiniMap
 var unit_catalog_panel: PanelContainer
 var unit_catalog_supply_label: Label
 var airport_icon_button: Button
+var aerial_category_panel: PanelContainer
+var aerial_category_body_label: Label
+var aerial_recon_status_label: Label
 var tank_count_input: SpinBox
 var tank_count_line_edit: LineEdit
 var tank_build_button: Button
@@ -191,12 +194,7 @@ func _create_unit_catalog_panel() -> void:
 		false,
 		true
 	))
-	root.add_child(_build_unit_category(
-		"Aerial Units",
-		"No units available yet.",
-		false,
-		false
-	))
+	root.add_child(_build_aerial_category())
 	add_child(unit_catalog_panel)
 
 func _build_building_category() -> Control:
@@ -207,12 +205,12 @@ func _build_building_category() -> Control:
 	vbox.add_theme_constant_override("separation", 8)
 	panel.add_child(vbox)
 	var title := Label.new()
-	title.text = "Building"
+	title.text = "Constructions"
 	title.add_theme_color_override("font_color", C_TEXT)
 	title.add_theme_font_size_override("font_size", 15)
 	vbox.add_child(title)
 	var body := Label.new()
-	body.text = "Deployable structures and base infrastructure."
+	body.text = "Place construction sites, then feed them supply with trucks."
 	body.add_theme_color_override("font_color", C_MUTED)
 	body.add_theme_font_size_override("font_size", 12)
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -244,6 +242,45 @@ func _build_unit_category(title_text: String, body_text: String, include_tank: b
 		vbox.add_child(_build_mortar_row())
 	return panel
 
+func _build_aerial_category() -> Control:
+	aerial_category_panel = PanelContainer.new()
+	aerial_category_panel.add_theme_stylebox_override("panel", _panel_style(14))
+	aerial_category_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 8)
+	aerial_category_panel.add_child(vbox)
+	var title := Label.new()
+	title.text = "Aerial Units"
+	title.add_theme_color_override("font_color", C_TEXT)
+	title.add_theme_font_size_override("font_size", 15)
+	vbox.add_child(title)
+	aerial_category_body_label = Label.new()
+	aerial_category_body_label.text = "Requires at least one completed Airport."
+	aerial_category_body_label.add_theme_color_override("font_color", C_MUTED)
+	aerial_category_body_label.add_theme_font_size_override("font_size", 12)
+	aerial_category_body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(aerial_category_body_label)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	var icon := UnitIconScript.new() as UnitIcon
+	icon.unit_type = Game.T_RECON
+	row.add_child(icon)
+	var name := Label.new()
+	name.text = "Reconnaissance Plane"
+	name.custom_minimum_size = Vector2(172, 0)
+	name.add_theme_color_override("font_color", C_TEXT)
+	name.add_theme_font_size_override("font_size", 14)
+	row.add_child(name)
+	aerial_recon_status_label = Label.new()
+	aerial_recon_status_label.text = "Inactive"
+	aerial_recon_status_label.add_theme_color_override("font_color", C_MUTED)
+	aerial_recon_status_label.add_theme_font_size_override("font_size", 13)
+	row.add_child(aerial_recon_status_label)
+	vbox.add_child(row)
+	set_aerial_units_active(false)
+	return aerial_category_panel
+
 func _build_airport_row() -> Control:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -266,14 +303,23 @@ func _build_airport_row() -> Control:
 	icon.custom_minimum_size = Vector2(44, 44)
 	icon_wrap.add_child(icon)
 	row.add_child(airport_icon_button)
-	var name := Label.new()
-	name.text = "Airport"
-	name.custom_minimum_size = Vector2(108, 0)
-	name.add_theme_color_override("font_color", C_TEXT)
-	name.add_theme_font_size_override("font_size", 14)
-	row.add_child(name)
+	var name_button := Button.new()
+	name_button.text = "Airport"
+	name_button.custom_minimum_size = Vector2(108, 0)
+	name_button.focus_mode = Control.FOCUS_NONE
+	name_button.flat = true
+	name_button.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	name_button.add_theme_stylebox_override("hover", StyleBoxEmpty.new())
+	name_button.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+	name_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	name_button.add_theme_color_override("font_color", C_TEXT)
+	name_button.add_theme_color_override("font_hover_color", C_ACCENT)
+	name_button.add_theme_color_override("font_pressed_color", C_ACCENT)
+	name_button.add_theme_font_size_override("font_size", 14)
+	name_button.pressed.connect(_on_build_airport_pressed)
+	row.add_child(name_button)
 	var build_time := Label.new()
-	build_time.text = "10 mins"
+	build_time.text = "1000 supply"
 	build_time.add_theme_color_override("font_color", C_ACCENT)
 	build_time.add_theme_font_size_override("font_size", 13)
 	row.add_child(build_time)
@@ -861,6 +907,17 @@ func set_unit_catalog_supply(current: float) -> void:
 	if unit_catalog_supply_label != null:
 		unit_catalog_supply_label.text = "Supply Pool: " + str(roundi(current))
 
+func set_aerial_units_active(active: bool) -> void:
+	if aerial_category_panel == null:
+		return
+	aerial_category_panel.self_modulate = Color(1.0, 1.0, 1.0, 1.0 if active else 0.45)
+	if aerial_category_body_label != null:
+		aerial_category_body_label.text = "Aircraft can operate from player Airports." if active else "Requires at least one completed Airport."
+		aerial_category_body_label.add_theme_color_override("font_color", C_MUTED if active else Color(0.718, 0.635, 0.494))
+	if aerial_recon_status_label != null:
+		aerial_recon_status_label.text = "Online" if active else "Inactive"
+		aerial_recon_status_label.add_theme_color_override("font_color", C_ACCENT if active else C_MUTED)
+
 func set_tank_queue_status(queue_count: int, progress: float, waiting_for_space: bool, paused: bool) -> void:
 	if tank_queue_bar == null or tank_queue_count_label == null:
 		return
@@ -927,7 +984,10 @@ func sync_build_buttons() -> void:
 		airport_icon_button.add_theme_stylebox_override("pressed", _icon_btn_style_armed())
 	var d := Game.bldg_def(Game.build_mode)
 	if not d.is_empty():
-		lbl_hint.text = "Click an open " + str(d.w) + "x" + str(d.h) + " footprint on the map to place the " + d.label + "."
+		if Game.build_mode == Game.T_AIRPORT:
+			lbl_hint.text = "Click an open " + str(d.w) + "x" + str(d.h) + " footprint on the map to place the Airport construction site."
+		else:
+			lbl_hint.text = "Click an open " + str(d.w) + "x" + str(d.h) + " footprint on the map to place the " + d.label + "."
 	else:
 		lbl_hint.text = "Select a structure, then click an open spot on the map."
 
@@ -988,8 +1048,28 @@ func show_struct(s: Node2D) -> void:
 		sup_bar.value = ratio
 	elif s is Airport:
 		prod_panel.visible = false
+		var airport: Airport = s as Airport
+		if airport != null and airport.is_under_construction():
+			lbl_sel_pill.text = "Airport Construction"
+			lbl_sel_detail.text = "Construction site. Select a Supply Depot and right-click this site to send build-supply trucks. Progress pauses when buffered supply reaches zero."
+			lbl_unit_pill.text = "Construction selected"
+			lbl_unit_name.text = "Airport Site #" + str(s.entity_id)
+			lbl_unit_copy.text = "Blueprint stage. Trucks deliver build supply, the site consumes it over time, and HP rises with the consumed amount."
+			hp_row.visible = true
+			hp_label.text = "Construction HP"
+			hp_value.text = "HP: " + str(roundi(airport.hp)) + " / " + str(roundi(airport.max_hp))
+			hp_bar.value = airport.hp_ratio()
+			sup_row.visible = true
+			sup_label.text = "Build Supply"
+			sup_value.text = "Buffered: %d | Delivered: %d / %d" % [
+				roundi(airport.build_supply_buffer),
+				roundi(airport.build_supplied_total),
+				roundi(airport.build_supply_required),
+			]
+			sup_bar.value = airport.supply_buffer_ratio()
+			return
 		lbl_sel_pill.text = s.label
-		lbl_sel_detail.text = "Non-movable airfield structure. Placement uses the map build mode. Build time listed in the factory panel: 10 mins."
+		lbl_sel_detail.text = "Non-movable airfield structure. Construction is complete."
 		lbl_unit_pill.text = "Airport selected"
 		lbl_unit_name.text = "Airport #" + str(s.entity_id)
 		lbl_unit_copy.text = "Airfield structure reserved for future aerial unit production."

@@ -15,6 +15,7 @@ var path_goal: Variant = null  # Vector2 or null
 var next_repath_at: float = 0.0
 var blind_move: bool = false
 var attack_target: Variant = null  # Unit or null
+var attack_structure_target: Variant = null  # Structure or null
 var attack_point: Variant = null  # Vector2 or null
 var attack_point_tile: Vector2i = Vector2i(-1, -1)
 var attack_point_hits_bridge: bool = false

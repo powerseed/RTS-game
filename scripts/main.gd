@@ -38,6 +38,8 @@ var _mortar_build_active: bool = false
 var _mortar_build_paused: bool = false
 var _mortar_build_waiting_spawn: bool = false
 var _mortar_build_waiting_supply: bool = false
+var _supply_receiver_index: Dictionary = {}
+var _supply_receiver_index_built_at: float = -1.0
 
 func _ready() -> void:
 	Game.camera = cam2d
@@ -124,6 +126,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 		Game.ptr_in = true
 		Game.hover_tile = Game.tile_at(ev.position.x, ev.position.y) if Game.build_mode != "" else Vector2i(-1, -1)
 		if ev.button_index == MOUSE_BUTTON_RIGHT and ev.pressed:
+			if Game.build_mode != "":
+				_cancel_build_mode()
+				return
 			if ev.ctrl_pressed:
 				_issue_force_attack(ev.position)
 			else:
@@ -227,12 +232,27 @@ func toggle_build(btype: String) -> void:
 		var d := Game.bldg_def(btype)
 		if not d.is_empty():
 			hud.set_sel_pill("Build mode")
-			hud.set_sel_detail(d.label + " selected. Hover the field to preview a " +
+			var build_label: String = d.label
+			if btype == Game.T_AIRPORT:
+				build_label = d.label + " construction site"
+			hud.set_sel_detail(build_label + " selected. Hover the field to preview a " +
 				str(d.w) + "x" + str(d.h) + " footprint, then click to deploy it.")
 			hud.reset_unit_panel()
 			hud.set_status("Placement mode active. Choose an open " +
-				str(d.w) + "x" + str(d.h) + " area for the " + d.label + ".")
+				str(d.w) + "x" + str(d.h) + " area for the " + build_label + ".")
 	hud.sync_build_buttons()
+
+func _cancel_build_mode() -> void:
+	if Game.build_mode == "":
+		return
+	Game.build_mode = ""
+	Game.hover_tile = Vector2i(-1, -1)
+	Game.selected_structure = null
+	Game.selected_units.clear()
+	hud.reset_selection()
+	hud.reset_unit_panel()
+	hud.sync_build_buttons()
+	hud.set_status("Placement mode cancelled.")
 
 func _attempt_place(c: int, r: int) -> void:
 	var d := Game.bldg_def(Game.build_mode)
@@ -241,6 +261,9 @@ func _attempt_place(c: int, r: int) -> void:
 		hud.set_status("Tank Plants are no longer buildable.")
 		Game.build_mode = ""
 		hud.sync_build_buttons()
+		return
+	if not _footprint_is_explored(c, r, d.w, d.h):
+		hud.set_status("That footprint is still under black fog.")
 		return
 	if not Game.fp_valid(c, r, d.w, d.h):
 		hud.set_status("That footprint is blocked or off the map."); return
@@ -264,14 +287,28 @@ func _attempt_place(c: int, r: int) -> void:
 	# Connect signals after the node enters the tree
 	if structure is TankPlant:
 		structure.tank_produced.connect(_on_tank_produced)
+	if structure is Airport:
+		(structure as Airport).construction_completed.connect(_on_airport_construction_completed)
 	Game.selected_structure = structure; Game.selected_units.clear()
 	Game.build_mode = ""; Game.hover_tile = Vector2i(-1, -1)
 	hud.sync_build_buttons()
 	if structure is SupplyDepot:
 		hud.set_status("Supply Depot deployed with 2000 stored supplies.")
 	elif structure is Airport:
-		hud.set_status("Airport placed. Build time listed as 10 mins.")
+		hud.set_status("Airport blueprint placed. Send supply trucks to deliver 1000 build supply.")
 	Game.structure_placed.emit(structure)
+
+func _footprint_is_explored(c: int, r: int, w: int, h: int) -> bool:
+	for rr in range(r, r + h):
+		for cc in range(c, c + w):
+			if not Game.fexp(cc, rr):
+				return false
+	return true
+
+func _on_airport_construction_completed(site: Airport) -> void:
+	if site == null or not is_instance_valid(site):
+		return
+	hud.set_status("Airport construction complete.")
 
 func _on_tank_produced(plant: TankPlant) -> void:
 	var sp = Game.find_open(plant.grid_col + plant.grid_w + 0.85, plant.grid_row + plant.grid_h + 0.35)
@@ -303,6 +340,8 @@ func _on_unit_build_requested(unit_type: String, amount: int) -> void:
 			_queue_tanks_from_supply_network(amount)
 		Game.T_MORTAR:
 			_queue_mortars_from_supply_network(amount)
+		Game.T_RECON:
+			hud.set_status("Reconnaissance Plane production is not implemented yet.")
 		_:
 			hud.set_status("That unit is not available yet.")
 
@@ -724,6 +763,11 @@ func _issue_move(pos: Vector2) -> void:
 	if target_unit != null and target_unit.faction != Game.PLAYER:
 		_issue_attack_order(target_unit, sel)
 		return
+	if t != Vector2i(-1, -1):
+		var target_structure: Structure = Game.struct_at(t.x, t.y) as Structure
+		if target_structure != null and target_structure.faction != Game.PLAYER:
+			_issue_attack_structure_order(target_structure, sel)
+			return
 	if t == Vector2i(-1, -1):
 		hud.set_status("Move order is outside the battlefield."); return
 	var blind_order: bool = not Game.fexp(t.x, t.y)
@@ -742,6 +786,7 @@ func _issue_move(pos: Vector2) -> void:
 				continue
 			if unit is Truck:
 				unit.follow_target = null
+				unit.construction_target = null
 			blind_ordered += 1
 		if blind_ordered == 0:
 			_show_no_path_warning(pos)
@@ -770,6 +815,7 @@ func _issue_move(pos: Vector2) -> void:
 			continue
 		if unit is Truck:
 			unit.follow_target = null
+			unit.construction_target = null
 		ordered += 1
 	if ordered == 0:
 		_show_no_path_warning(pos)
@@ -800,17 +846,38 @@ func _issue_attack_order(target_unit: Unit, sel: Array) -> void:
 		status_text = "%d units ordered to attack %s #%d." % [ordered, target_unit.label, target_unit.entity_id]
 	hud.set_status(status_text)
 
+func _issue_attack_structure_order(target_structure: Structure, sel: Array) -> void:
+	var ordered := 0
+	for unit_node in sel:
+		var unit: Unit = unit_node as Unit
+		if unit == null or not _unit_can_attack(unit):
+			continue
+		_clear_attack_goal(unit)
+		unit.attack_structure_target = target_structure
+		_update_attack_structure_pursuit(unit, true)
+		ordered += 1
+	if ordered <= 0:
+		hud.set_status("Selected units cannot attack that structure.")
+		return
+	var status_text := "Attack order issued on %s #%d." % [target_structure.label, target_structure.entity_id]
+	if ordered != 1:
+		status_text = "%d units ordered to attack %s #%d." % [ordered, target_structure.label, target_structure.entity_id]
+	hud.set_status(status_text)
+
 func _issue_force_attack(pos: Vector2) -> void:
 	var sel := Game.get_selected_units()
 	if sel.is_empty():
 		hud.set_status("No units selected.")
 		return
+	var clicked_unit := Game.unit_at_screen(pos.x, pos.y) as Unit
 	var t := Game.tile_at(pos.x, pos.y)
 	if t == Vector2i(-1, -1):
 		hud.set_status("Attack-ground order is outside the battlefield.")
 		return
 	hud.set_order_coordinate(t)
 	var attack_point := Vector2(t.x + 0.5, t.y + 0.5)
+	if clicked_unit != null:
+		attack_point = Vector2(clicked_unit.gx, clicked_unit.gy)
 	var hit_bridge: bool = Game.bridge_tile_at(t.x, t.y)
 	var blind_order: bool = not Game.fexp(t.x, t.y)
 	var ordered := 0
@@ -852,6 +919,11 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 		hud.set_status("Supply Depot needs at least 500 supplies to dispatch a truck."); return
 	var tu = Game.unit_at_screen(pos.x, pos.y)
 	var t := Game.tile_at(pos.x, pos.y)
+	var target_site: Airport = null
+	if t != Vector2i(-1, -1):
+		var st: Structure = Game.struct_at(t.x, t.y) as Structure
+		if st is Airport and st.faction == Game.PLAYER and (st as Airport).is_under_construction():
+			target_site = st as Airport
 	if tu == null and t == Vector2i(-1, -1):
 		hud.set_status("Supply order is outside the battlefield."); return
 	if t != Vector2i(-1, -1):
@@ -862,12 +934,17 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 		sp = _find_ground_open_at(sp.x, sp.y, Game.TRUCK_COL_R)
 	if sp == null:
 		hud.set_status("The Supply Depot exit is blocked."); return
-	var tgt_pt: Variant = null; var tgt_unit: Node2D = null; var tgt_lbl := ""
+	var tgt_pt: Variant = null
+	var tgt_unit: Node2D = null
+	var tgt_lbl := ""
 	var blind_order: bool = false
 	if tu != null and tu.movable and tu.faction == Game.PLAYER:
 		tgt_unit = tu
 		tgt_pt = _find_ground_open_at(tu.gx, tu.gy, Game.TRUCK_COL_R)
 		tgt_lbl = tu.label + " #" + str(tu.entity_id)
+	elif target_site != null:
+		tgt_pt = _find_ground_open_near_structure(target_site, Game.TRUCK_COL_R)
+		tgt_lbl = "Airport Site #" + str(target_site.entity_id)
 	else:
 		blind_order = not Game.fexp(t.x, t.y)
 		tgt_pt = _clamp_ground_target(t.x + 0.5, t.y + 0.5, Game.TRUCK_COL_R) if blind_order else _find_ground_open_at(t.x + 0.5, t.y + 0.5, Game.TRUCK_COL_R)
@@ -881,17 +958,55 @@ func _dispatch_truck(depot: SupplyDepot, pos: Vector2) -> void:
 	truck.gx = sp.x
 	truck.gy = sp.y
 	truck.follow_target = tgt_unit
+	truck.construction_target = target_site
 	truck.supplies = Game.TRUCK_CARGO
 	truck.max_supplies = Game.TRUCK_CARGO
 	truck.speed = Game.TRUCK_SPEED
 	truck.heading = Vector2(1.0, 0.0)
 	var truck_blind_order: bool = blind_order or not Game.fexp(clampi(int(tgt_pt.x), 0, Game.MAP_COLS - 1), clampi(int(tgt_pt.y), 0, Game.MAP_ROWS - 1))
-	_set_move_goal(truck, tgt_pt, true, truck_blind_order)
+	if not _set_move_goal(truck, tgt_pt, true, truck_blind_order):
+		depot.stored += Game.TRUCK_CARGO
+		hud.set_status("That supply route has no path.")
+		return
 	entities.add_child(truck)
 	Game.unit_spawned.emit(truck)
 	hud.set_status(
-		"Supply truck dispatched to " + tgt_lbl + "." if tgt_unit != null
+		"Supply truck dispatched to " + tgt_lbl + "." if tgt_unit != null or target_site != null
 		else "Supply truck dispatched with 500 supplies.")
+
+func _find_ground_open_near_structure(structure: Structure, radius: float):
+	var c: float = float(structure.grid_col)
+	var r: float = float(structure.grid_row)
+	var w: float = float(structure.grid_w)
+	var h: float = float(structure.grid_h)
+	var candidates: Array[Vector2] = [
+		Vector2(c - 0.55, r + h * 0.5),
+		Vector2(c + w + 0.55, r + h * 0.5),
+		Vector2(c + w * 0.5, r - 0.55),
+		Vector2(c + w * 0.5, r + h + 0.55),
+		Vector2(c - 0.45, r - 0.45),
+		Vector2(c + w + 0.45, r - 0.45),
+		Vector2(c - 0.45, r + h + 0.45),
+		Vector2(c + w + 0.45, r + h + 0.45),
+	]
+	for candidate in candidates:
+		var open_pt: Variant = _find_ground_open_at(candidate.x, candidate.y, radius)
+		if open_pt == null:
+			continue
+		if Game.struct_at(clampi(int(open_pt.x), 0, Game.MAP_COLS - 1), clampi(int(open_pt.y), 0, Game.MAP_ROWS - 1)) == null:
+			return open_pt
+	return null
+
+func _distance_to_structure_footprint(wx: float, wy: float, structure: Structure) -> float:
+	if structure == null:
+		return INF
+	var left: float = float(structure.grid_col)
+	var top: float = float(structure.grid_row)
+	var right: float = left + float(structure.grid_w)
+	var bottom: float = top + float(structure.grid_h)
+	var nearest_x: float = clampf(wx, left, right)
+	var nearest_y: float = clampf(wy, top, bottom)
+	return Vector2(wx, wy).distance_to(Vector2(nearest_x, nearest_y))
 
 func _ground_clear_at_radius(wx: float, wy: float, radius: float) -> bool:
 	if wx < 0.0 or wy < 0.0 or wx >= Game.MAP_COLS or wy >= Game.MAP_ROWS:
@@ -998,6 +1113,7 @@ func _clear_move_goal(u: Unit) -> void:
 
 func _clear_attack_goal(u: Unit) -> void:
 	u.attack_target = null
+	u.attack_structure_target = null
 	u.attack_point = null
 	u.attack_point_tile = Vector2i(-1, -1)
 	u.attack_point_hits_bridge = false
@@ -1015,6 +1131,16 @@ func _unit_attack_range(u: Unit) -> float:
 
 func _unit_distance(a: Unit, b: Unit) -> float:
 	return sqrt((b.gx - a.gx) ** 2 + (b.gy - a.gy) ** 2)
+
+func _structure_center(s: Structure) -> Vector2:
+	return Vector2(float(s.grid_col) + float(s.grid_w) * 0.5, float(s.grid_row) + float(s.grid_h) * 0.5)
+
+func _structure_target_lift(s: Structure) -> float:
+	var center: Vector2 = _structure_center(s)
+	return Game.surface_lift_at(center.x, center.y) + 12.0
+
+func _unit_distance_to_structure(u: Unit, s: Structure) -> float:
+	return _distance_to_structure_footprint(u.gx, u.gy, s)
 
 func _terrain_height_m_at(wx: float, wy: float) -> float:
 	return Game.surface_elev_units_at(wx, wy) * Game.ELEV_METERS_PER_LEVEL
@@ -1144,6 +1270,13 @@ func _get_valid_attack_target(u: Unit) -> Unit:
 		return null
 	return target
 
+func _get_valid_attack_structure_target(u: Unit) -> Structure:
+	var target := u.attack_structure_target as Structure
+	if target == null or not is_instance_valid(target) or target.hp <= 0.0 or target.faction == u.faction:
+		u.attack_structure_target = null
+		return null
+	return target
+
 func _get_valid_attack_point(u: Unit) -> Variant:
 	var point: Variant = u.attack_point
 	if point == null:
@@ -1206,6 +1339,9 @@ func _projectile_path_clear(u: Unit, fire_point: Vector2, end_lift: float) -> bo
 func _unit_can_fire_at_target(u: Unit, target: Unit) -> bool:
 	return _projectile_path_clear(u, Vector2(target.gx, target.gy), target.get_lift())
 
+func _unit_can_fire_at_structure(u: Unit, target: Structure) -> bool:
+	return _projectile_path_clear(u, _structure_center(target), _structure_target_lift(target))
+
 func _unit_can_fire_at_point(u: Unit, fire_point: Vector2) -> bool:
 	return _projectile_path_clear(u, fire_point, Game.surface_lift_at(fire_point.x, fire_point.y) + 4.0)
 
@@ -1226,6 +1362,29 @@ func _update_attack_pursuit(u: Unit, force_repath: bool = false) -> bool:
 	var attack_spot: Variant = _find_ground_open_at(desired.x, desired.y, u.get_collision_radius())
 	if attack_spot == null:
 		attack_spot = _find_ground_open_at(target.gx - normal.x * (u.get_collision_radius() + 0.16), target.gy - normal.y * (u.get_collision_radius() + 0.16), u.get_collision_radius())
+	if attack_spot == null:
+		return false
+	return _set_move_goal(u, attack_spot, force_repath, false)
+
+func _update_attack_structure_pursuit(u: Unit, force_repath: bool = false) -> bool:
+	var target := _get_valid_attack_structure_target(u)
+	if target == null:
+		return false
+	var target_dist: float = _unit_distance_to_structure(u, target)
+	var attack_range: float = _unit_attack_range(u)
+	if target_dist <= attack_range and _unit_can_see_hostile_structure(u, target) and _unit_can_fire_at_structure(u, target):
+		_clear_move_goal(u)
+		return true
+	var center: Vector2 = _structure_center(target)
+	var dir := center - Vector2(u.gx, u.gy)
+	var dir_len := dir.length()
+	var normal := dir / dir_len if dir_len > 0.001 else Vector2(1.0, 0.0)
+	var footprint_radius: float = maxf(float(target.grid_w), float(target.grid_h)) * 0.5
+	var offset_dist := maxf(u.get_collision_radius() + footprint_radius + 0.18, attack_range * 0.82)
+	var desired := center - normal * offset_dist
+	var attack_spot: Variant = _find_ground_open_at(desired.x, desired.y, u.get_collision_radius())
+	if attack_spot == null:
+		attack_spot = _find_ground_open_near_structure(target, u.get_collision_radius())
 	if attack_spot == null:
 		return false
 	return _set_move_goal(u, attack_spot, force_repath, false)
@@ -1427,10 +1586,13 @@ func _update_units(dt: float) -> void:
 		else:
 			u.out_of_supply_started_at = -1.0
 		var attack_target: Unit = null
+		var attack_structure_target: Structure = null
 		var attack_point: Variant = null
 		if _unit_can_attack(u):
 			attack_target = _get_valid_attack_target(u)
 			if attack_target == null:
+				attack_structure_target = _get_valid_attack_structure_target(u)
+			if attack_target == null and attack_structure_target == null:
 				attack_point = _get_valid_attack_point(u)
 		# truck follow target
 		var active_tu: Unit = null
@@ -1448,12 +1610,26 @@ func _update_units(dt: float) -> void:
 			else:
 				u.follow_target = null
 				_clear_move_goal(u)
+		var active_site: Airport = null
+		if u is Truck and (u as Truck).construction_target != null:
+			var site_target: Airport = (u as Truck).construction_target as Airport
+			if site_target != null and is_instance_valid(site_target) and site_target.is_under_construction():
+				active_site = site_target
+				var site_goal: Variant = _find_ground_open_near_structure(site_target, u.get_collision_radius())
+				if site_goal != null and Vector2(u.gx, u.gy).distance_to(site_goal) > Game.TRUCK_ARRIVE_R * 0.5:
+					_set_move_goal(u, site_goal, false, false)
+			else:
+				(u as Truck).construction_target = null
+				if active_tu == null:
+					_clear_move_goal(u)
 		if attack_target != null:
 			_update_attack_pursuit(u)
+		elif attack_structure_target != null:
+			_update_attack_structure_pursuit(u)
 		elif attack_point != null:
 			_update_ground_attack_pursuit(u)
 		if u.destination == null:
-			if u is Truck: _truck_aura(u, dt)
+			if u is Truck: _update_truck_resupply(u as Truck, dt)
 			continue
 		var move_target: Vector2 = u.path[0] if not u.path.is_empty() else u.destination
 		var dx: float = move_target.x - u.gx
@@ -1465,15 +1641,15 @@ func _update_units(dt: float) -> void:
 				u.path.remove_at(0)
 				if u.path.is_empty() and u.destination != null and Vector2(u.gx, u.gy).distance_to(u.destination) < arr_r + 0.04:
 					if u is Truck:
-						if active_tu == null:
+						if active_tu == null and active_site == null:
 							_clear_move_goal(u)
 							u.follow_target = null
 					else:
 						_clear_move_goal(u)
-				if u is Truck: _truck_aura(u, dt)
+				if u is Truck: _update_truck_resupply(u as Truck, dt)
 				continue
 			if u is Truck:
-				if active_tu == null:
+				if active_tu == null and active_site == null:
 					_clear_move_goal(u); u.follow_target = null
 			else:
 				_clear_move_goal(u)
@@ -1494,28 +1670,73 @@ func _update_units(dt: float) -> void:
 			if moved <= 0.0:
 				var repathed := _repath_unit(u)
 				u.next_repath_at = Game.elapsed + PATH_REPATH_S
-				if not repathed and active_tu == null:
+				if not repathed and active_tu == null and active_site == null:
 					_clear_move_goal(u)
-				if u is Truck: _truck_aura(u, dt)
+				if u is Truck: _update_truck_resupply(u as Truck, dt)
 				continue
 			if u.consumes_supplies and not super_tank and u.move_supply_per_unit > 0.0:
 				u.supplies = maxf(0.0, u.supplies - moved * u.move_supply_per_unit)
 			u.exposed_until = maxf(u.exposed_until, Game.elapsed + Game.EXPOSED_TTL_S)
-		if u is Truck: _truck_aura(u, dt)
+		if u is Truck: _update_truck_resupply(u as Truck, dt)
+
+func _update_truck_resupply(truck: Truck, dt: float) -> void:
+	if truck == null:
+		return
+	truck.aura_query_accum_s += dt
+	var moved_since_query: bool = truck.last_aura_query_pos.distance_to(Vector2(truck.gx, truck.gy)) >= Game.TRUCK_AURA_REQUERY_DIST
+	if not moved_since_query and Game.elapsed < truck.next_aura_query_at:
+		return
+	var query_dt: float = truck.aura_query_accum_s
+	truck.aura_query_accum_s = 0.0
+	truck.next_aura_query_at = Game.elapsed + Game.TRUCK_AURA_QUERY_S
+	truck.last_aura_query_pos = Vector2(truck.gx, truck.gy)
+	_truck_aura(truck, query_dt)
 
 func _truck_aura(truck: Truck, dt: float) -> void:
-	if truck.supplies <= 0: truck.supplies = 0.0; return
-	var recip: Array = []
-	for u: Unit in Game.get_units():
-		if u == truck or u.faction != truck.faction: continue
-		if not u.accepts_resupply: continue
-		if u.max_supplies <= u.supplies: continue
-		var d := sqrt((u.gx - truck.gx) ** 2 + (u.gy - truck.gy) ** 2)
-		if d <= Game.TRUCK_RESUPPLY_R: recip.append(u)
+	if truck.supplies <= 0:
+		truck.supplies = 0.0
+		return
+	var target_site: Airport = truck.construction_target as Airport
+	if target_site != null:
+		if not is_instance_valid(target_site) or not target_site.is_under_construction():
+			truck.construction_target = null
+		else:
+			var site_dist: float = _distance_to_structure_footprint(truck.gx, truck.gy, target_site)
+			if site_dist <= Game.TRUCK_RESUPPLY_R:
+				var transfer_cap: float = minf(truck.supplies, Game.TRUCK_RESUPPLY_S * dt)
+				var sent: float = target_site.receive_build_supply(transfer_cap)
+				if sent > 0.0:
+					truck.supplies = maxf(0.0, truck.supplies - sent)
+				if not target_site.can_receive_build_supply():
+					truck.construction_target = null
+			return
+	var recip: Array = _nearby_supply_receivers(truck)
 	if recip.is_empty(): return
+	var best_site: Airport = null
+	var best_site_dist: float = INF
+	var unit_recip: Array = []
+	for node in recip:
+		var site: Airport = node as Airport
+		if site != null:
+			var dist_to_site: float = _distance_to_structure_footprint(truck.gx, truck.gy, site)
+			if dist_to_site < best_site_dist:
+				best_site = site
+				best_site_dist = dist_to_site
+			continue
+		var unit_receiver: Unit = node as Unit
+		if unit_receiver != null:
+			unit_recip.append(unit_receiver)
+	if best_site != null:
+		var site_cap: float = minf(truck.supplies, Game.TRUCK_RESUPPLY_S * dt)
+		var site_sent: float = best_site.receive_build_supply(site_cap)
+		if site_sent > 0.0:
+			truck.supplies = maxf(0.0, truck.supplies - site_sent)
+		return
+	if unit_recip.is_empty():
+		return
 	var remain := minf(truck.supplies, Game.TRUCK_RESUPPLY_S * dt)
 	if remain <= 0: return
-	var pool: Array = recip.duplicate()
+	var pool: Array = unit_recip.duplicate()
 	while remain > 0.001 and not pool.is_empty():
 		var split := remain / pool.size()
 		var i := pool.size() - 1
@@ -1529,6 +1750,75 @@ func _truck_aura(truck: Truck, dt: float) -> void:
 			i -= 1
 	var xfer := minf(truck.supplies, Game.TRUCK_RESUPPLY_S * dt) - remain
 	truck.supplies = maxf(0.0, truck.supplies - xfer)
+
+func _supply_cell_key(wx: float, wy: float) -> Vector2i:
+	return Vector2i(int(floor(wx / Game.TRUCK_AURA_CELL)), int(floor(wy / Game.TRUCK_AURA_CELL)))
+
+func _ensure_supply_receiver_index() -> void:
+	if _supply_receiver_index_built_at >= 0.0 and Game.elapsed - _supply_receiver_index_built_at < Game.TRUCK_AURA_QUERY_S:
+		return
+	_supply_receiver_index.clear()
+	_supply_receiver_index_built_at = Game.elapsed
+	for node in Game.get_units():
+		var u: Unit = node as Unit
+		if u == null or u.hp <= 0:
+			continue
+		if not u.accepts_resupply or u.max_supplies <= u.supplies:
+			continue
+		var key: Vector2i = _supply_cell_key(u.gx, u.gy)
+		if not _supply_receiver_index.has(key):
+			_supply_receiver_index[key] = []
+		(_supply_receiver_index[key] as Array).append(u)
+	for node in Game.get_structures():
+		var site: Airport = node as Airport
+		if site == null or not is_instance_valid(site):
+			continue
+		if not site.can_receive_build_supply():
+			continue
+		var sx: float = float(site.grid_col) + float(site.grid_w) * 0.5
+		var sy: float = float(site.grid_row) + float(site.grid_h) * 0.5
+		var key: Vector2i = _supply_cell_key(sx, sy)
+		if not _supply_receiver_index.has(key):
+			_supply_receiver_index[key] = []
+		(_supply_receiver_index[key] as Array).append(site)
+
+func _nearby_supply_receivers(truck: Truck) -> Array:
+	_ensure_supply_receiver_index()
+	var recip: Array = []
+	var seen := {}
+	var center_key: Vector2i = _supply_cell_key(truck.gx, truck.gy)
+	var cell_span: int = maxi(1, int(ceili(Game.TRUCK_RESUPPLY_R / Game.TRUCK_AURA_CELL)))
+	var max_d_sq: float = Game.TRUCK_RESUPPLY_R * Game.TRUCK_RESUPPLY_R
+	for ro in range(-cell_span, cell_span + 1):
+		for co in range(-cell_span, cell_span + 1):
+			var key := Vector2i(center_key.x + co, center_key.y + ro)
+			var bucket: Array = _supply_receiver_index.get(key, [])
+			for node in bucket:
+				if node == null or not is_instance_valid(node):
+					continue
+				var node_id: int = node.get_instance_id()
+				if seen.has(node_id):
+					continue
+				var u: Unit = node as Unit
+				if u != null:
+					if u == truck or u.faction != truck.faction:
+						continue
+					var dx: float = u.gx - truck.gx
+					var dy: float = u.gy - truck.gy
+					if dx * dx + dy * dy > max_d_sq:
+						continue
+					seen[node_id] = true
+					recip.append(u)
+					continue
+				var site: Airport = node as Airport
+				if site != null:
+					if site.faction != truck.faction:
+						continue
+					if _distance_to_structure_footprint(truck.gx, truck.gy, site) > Game.TRUCK_RESUPPLY_R:
+						continue
+					seen[node_id] = true
+					recip.append(site)
+	return recip
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  COLLISION
@@ -1610,20 +1900,31 @@ func _update_combat(_dt: float) -> void:
 			continue
 		var attack_range: float = _unit_attack_range(tank)
 		var tgt: Unit = _get_valid_attack_target(tank)
+		var structure_tgt: Structure = null
 		var attack_point: Variant = null
 		if tgt != null and (_unit_distance(tank, tgt) > attack_range or not _unit_can_see_hostile(tank, tgt) or not _unit_can_fire_at_target(tank, tgt)):
 			tgt = null
 		if tgt == null:
+			structure_tgt = _get_valid_attack_structure_target(tank)
+		if structure_tgt != null and (_unit_distance_to_structure(tank, structure_tgt) > attack_range or not _unit_can_see_hostile_structure(tank, structure_tgt) or not _unit_can_fire_at_structure(tank, structure_tgt)):
+			structure_tgt = null
+		if tgt == null and structure_tgt == null:
 			attack_point = _get_valid_attack_point(tank)
-		if tgt == null and attack_point == null:
+		if tgt == null and structure_tgt == null and attack_point == null:
 			tgt = _nearest_visible_hostile(tank, attack_range)
 			if tgt != null and not _unit_can_fire_at_target(tank, tgt):
 				tgt = null
-		if tgt == null and attack_point == null:
+		if tgt == null and structure_tgt == null and attack_point == null:
+			structure_tgt = _nearest_visible_hostile_structure(tank, attack_range)
+			if structure_tgt != null and not _unit_can_fire_at_structure(tank, structure_tgt):
+				structure_tgt = null
+		if tgt == null and structure_tgt == null and attack_point == null:
 			continue
 		var fire_point: Vector2
 		if tgt != null:
 			fire_point = Vector2(tgt.gx, tgt.gy)
+		elif structure_tgt != null:
+			fire_point = _structure_center(structure_tgt)
 		else:
 			fire_point = attack_point
 			if Vector2(tank.gx, tank.gy).distance_to(fire_point) > attack_range or not _unit_can_fire_at_point(tank, fire_point):
@@ -1650,6 +1951,8 @@ func _update_combat(_dt: float) -> void:
 		var target_lift: float = Game.surface_lift_at(fire_point.x, fire_point.y) + 4.0
 		if tgt != null:
 			target_lift = tgt.get_lift()
+		elif structure_tgt != null:
+			target_lift = _structure_target_lift(structure_tgt)
 		var shell: Dictionary = {
 			"faction": tank.faction,
 			"sx": muzzle_x, "sy": muzzle_y,
@@ -1659,6 +1962,8 @@ func _update_combat(_dt: float) -> void:
 			"damage": tank.attack_damage * atk_hp_ratio,
 			"target": tgt,
 		}
+		if structure_tgt != null:
+			shell["target_structure"] = structure_tgt
 		if tank is MortarSquad:
 			shell["speed"] = Game.MORTAR_SHELL_SPEED
 			shell["arc_base"] = Game.MORTAR_SHELL_ARC_BASE
@@ -1672,13 +1977,50 @@ func _update_combat(_dt: float) -> void:
 func _on_shell_hit(shell: Dictionary) -> void:
 	var tgt: Variant = shell.get("target", null)
 	var hit_unit := tgt as Unit
-	if hit_unit == null or not is_instance_valid(hit_unit) or hit_unit.hp <= 0:
-		var bridge_tile: Vector2i = shell.get("bridge_tile", Vector2i(-1, -1))
-		if bridge_tile != Vector2i(-1, -1) and Game.damage_bridge(bridge_tile.x, bridge_tile.y, float(shell.get("damage", Game.ATK_DMG))):
-			hud.set_status("Bridge destroyed.")
+	if hit_unit != null and is_instance_valid(hit_unit) and hit_unit.hp > 0:
+		hit_unit.hp = maxf(0.0, hit_unit.hp - float(shell.get("damage", Game.ATK_DMG)))
+		hit_unit.status_display_until = Game.elapsed + Game.DMG_BAR_S
 		return
-	hit_unit.hp = maxf(0.0, hit_unit.hp - float(shell.get("damage", Game.ATK_DMG)))
-	hit_unit.status_display_until = Game.elapsed + Game.DMG_BAR_S
+	var structure_target: Structure = shell.get("target_structure", null) as Structure
+	if structure_target != null and is_instance_valid(structure_target) and structure_target.hp > 0.0:
+		structure_target.hp = maxf(0.0, structure_target.hp - float(shell.get("damage", Game.ATK_DMG)))
+		return
+	var impact_point := Vector2(float(shell.get("tx", 0.0)), float(shell.get("ty", 0.0)))
+	var impact_unit: Unit = _ground_impact_unit_at(impact_point)
+	if impact_unit != null:
+		impact_unit.hp = maxf(0.0, impact_unit.hp - float(shell.get("damage", Game.ATK_DMG)))
+		impact_unit.status_display_until = Game.elapsed + Game.DMG_BAR_S
+		return
+	var impact_structure: Structure = _ground_impact_structure_at(impact_point)
+	if impact_structure != null:
+		impact_structure.hp = maxf(0.0, impact_structure.hp - float(shell.get("damage", Game.ATK_DMG)))
+		return
+	var bridge_tile: Vector2i = shell.get("bridge_tile", Vector2i(-1, -1))
+	if bridge_tile != Vector2i(-1, -1) and Game.damage_bridge(bridge_tile.x, bridge_tile.y, float(shell.get("damage", Game.ATK_DMG))):
+		hud.set_status("Bridge destroyed.")
+
+func _ground_impact_unit_at(point: Vector2) -> Unit:
+	for node in Game.get_units():
+		var u: Unit = node as Unit
+		if u == null or u.hp <= 0.0:
+			continue
+		if point.distance_to(Vector2(u.gx, u.gy)) <= u.get_collision_radius():
+			return u
+	return null
+
+func _ground_impact_structure_at(point: Vector2) -> Structure:
+	var tile_c: int = clampi(int(point.x), 0, Game.MAP_COLS - 1)
+	var tile_r: int = clampi(int(point.y), 0, Game.MAP_ROWS - 1)
+	var tile_structure: Structure = Game.struct_at(tile_c, tile_r) as Structure
+	if tile_structure != null and tile_structure.hp > 0.0:
+		return tile_structure
+	for s_node in Game.get_structures():
+		var s: Structure = s_node as Structure
+		if s == null or s.hp <= 0.0:
+			continue
+		if _distance_to_structure_footprint(point.x, point.y, s) <= Game.SHELL_HIT_R:
+			return s
+	return null
 
 func _nearest_hostile(u: Unit, rng: float) -> Unit:
 	var best: Unit = null; var best_d := rng
@@ -1696,6 +2038,19 @@ func _unit_can_see_hostile(u: Unit, c: Unit) -> bool:
 		_eye_height_m_at(u.gx, u.gy, Game.VIS_OBSERVER_HEIGHT_M),
 		c)
 
+func _unit_can_see_hostile_structure(u: Unit, s: Structure) -> bool:
+	var origin := Vector2(u.gx, u.gy)
+	var target_center: Vector2 = _structure_center(s)
+	var vision_radius: float = _unit_vision_radius(u)
+	if _unit_distance_to_structure(u, s) > vision_radius:
+		return false
+	return _point_visible_from(
+		origin,
+		vision_radius,
+		_eye_height_m_at(u.gx, u.gy, Game.VIS_OBSERVER_HEIGHT_M),
+		target_center,
+		_structure_target_lift(s))
+
 func _nearest_visible_hostile(u: Unit, rng: float) -> Unit:
 	var best: Unit = null
 	var best_d: float = rng
@@ -1710,14 +2065,38 @@ func _nearest_visible_hostile(u: Unit, rng: float) -> Unit:
 			best = c
 	return best
 
+func _nearest_visible_hostile_structure(u: Unit, rng: float) -> Structure:
+	var best: Structure = null
+	var best_d: float = rng
+	for s_node in Game.get_structures():
+		var s: Structure = s_node as Structure
+		if s == null or s.hp <= 0.0 or s.faction == u.faction:
+			continue
+		if not _unit_can_see_hostile_structure(u, s):
+			continue
+		var d: float = _unit_distance_to_structure(u, s)
+		if d <= rng and d < best_d:
+			best_d = d
+			best = s
+	return best
+
 func _remove_dead() -> void:
 	var enemy_cnt := 0
+	var enemy_structure_cnt := 0
 	var dead: Array = []
+	var dead_structures: Array = []
 	for u: Unit in Game.get_units():
 		if u.hp <= 0:
 			dead.append(u)
 			if u.faction == Game.ENEMY: enemy_cnt += 1
-	if dead.is_empty(): return
+	for s_node in Game.get_structures():
+		var s: Structure = s_node as Structure
+		if s != null and s.hp <= 0.0:
+			dead_structures.append(s)
+			if s.faction == Game.ENEMY:
+				enemy_structure_cnt += 1
+	if dead.is_empty() and dead_structures.is_empty():
+		return
 	for u in dead:
 		Game.selected_units.erase(u)
 		# Clean up truck follow targets pointing to dead unit
@@ -1728,10 +2107,28 @@ func _remove_dead() -> void:
 		Game.unit_died.emit(u)
 		u.died.emit()
 		u.queue_free()
-	if enemy_cnt > 0:
+	for s in dead_structures:
+		if Game.selected_structure == s:
+			Game.selected_structure = null
+		for other: Unit in Game.get_units():
+			if other is Truck and (other as Truck).construction_target == s:
+				(other as Truck).construction_target = null
+				_clear_move_goal(other)
+			if other.attack_structure_target == s:
+				other.attack_structure_target = null
+				_clear_move_goal(other)
+		s.destroyed.emit()
+		s.queue_free()
+	if enemy_cnt > 0 and enemy_structure_cnt > 0:
+		hud.set_status("%d enemy tanks and %d enemy structures destroyed." % [enemy_cnt, enemy_structure_cnt])
+	elif enemy_cnt > 0:
 		hud.set_status(
 			"Enemy tank destroyed." if enemy_cnt == 1
 			else str(enemy_cnt) + " enemy tanks destroyed.")
+	elif enemy_structure_cnt > 0:
+		hud.set_status(
+			"Enemy structure destroyed." if enemy_structure_cnt == 1
+			else str(enemy_structure_cnt) + " enemy structures destroyed.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  FOG
@@ -1803,15 +2200,24 @@ func _update_enemy_ai() -> void:
 		if u.faction != Game.ENEMY or not (u is Tank) or u.hp <= 0: continue
 		var attack_range: float = _unit_attack_range(u)
 		var tgt: Unit = _nearest_visible_hostile(u, attack_range)
+		var struct_tgt: Structure = null
 		if tgt != null and _unit_can_fire_at_target(u, tgt):
 			_clear_move_goal(u)
 		else:
+			struct_tgt = _nearest_visible_hostile_structure(u, attack_range)
+			if struct_tgt != null and _unit_can_fire_at_structure(u, struct_tgt):
+				_clear_move_goal(u)
+				continue
 			var seek_range: float = maxf(Game.ENEMY_SEEK_R, _unit_vision_radius(u))
 			var seek: Unit = _nearest_visible_hostile(u, seek_range)
 			if seek != null:
 				_set_move_goal(u, Vector2(seek.gx, seek.gy))
 			else:
-				_clear_move_goal(u)
+				var seek_structure: Structure = _nearest_visible_hostile_structure(u, seek_range)
+				if seek_structure != null:
+					_set_move_goal(u, _structure_center(seek_structure))
+				else:
+					_clear_move_goal(u)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SPAWN
@@ -1850,6 +2256,7 @@ func _spawn_starting_depot() -> void:
 # ═══════════════════════════════════════════════════════════════════════════════
 func _refresh_ui() -> void:
 	hud.set_unit_catalog_supply(_player_supply_total())
+	hud.set_aerial_units_active(_player_has_completed_airport())
 	hud.set_tank_queue_status(_tank_build_queue, _tank_build_progress(), _tank_build_waiting_spawn, _tank_build_paused)
 	hud.set_mortar_queue_status(_mortar_build_queue, _mortar_build_progress(), _mortar_build_waiting_spawn, _mortar_build_paused)
 	var ui_sig := _ui_signature()
@@ -1864,6 +2271,15 @@ func _refresh_ui() -> void:
 		hud.show_struct(ss); return
 	if Game.build_mode != "": return
 	hud.reset_selection(); hud.reset_unit_panel()
+
+func _player_has_completed_airport() -> bool:
+	for s_node in Game.get_structures():
+		var airport: Airport = s_node as Airport
+		if airport == null or airport.faction != Game.PLAYER:
+			continue
+		if not airport.is_under_construction():
+			return true
+	return false
 
 func _super_tank_cheat_applies(u: Unit) -> bool:
 	return Game.cheat_super_tanks and u is Tank and not (u is MortarSquad) and u.faction == Game.PLAYER
@@ -1995,5 +2411,16 @@ func _ui_signature() -> String:
 			]
 		if ss is SupplyDepot:
 			return "sd:%d:%0.1f:%0.1f" % [ss.get_instance_id(), ss.stored, ss.max_stored]
+		if ss is Airport:
+			var airport: Airport = ss as Airport
+			if airport != null:
+				return "ap:%d:%s:%0.1f:%0.1f:%0.1f:%0.1f" % [
+					ss.get_instance_id(),
+					airport.completed,
+					airport.hp,
+					airport.build_supplied_total,
+					airport.build_supply_buffer,
+					airport.build_supply_consumed,
+				]
 		return "st:%d" % ss.get_instance_id()
 	return "idle"

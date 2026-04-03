@@ -76,9 +76,10 @@ func _draw() -> void:
 	var fb := _fp(c + 0.95, r + 0.98, 0.72, 0.48, 40)
 	_poly_fill([fb.nw, fb.ne, fb.se, fb.sw], Color(0.082, 0.102, 0.118, 0.25))
 	# progress bar (only when building)
+	var ba := Game.grid_to_world(c + grid_w * 0.5, r + grid_h * 0.5, hp + 32)
+	_draw_structure_hp_bar(Vector2(ba.x, ba.y - 18.0), 84.0)
 	if building:
 		var prog := get_production_progress()
-		var ba := Game.grid_to_world(c + grid_w * 0.5, r + grid_h * 0.5, hp + 32)
 		_progress_bar(ba.x - 42, ba.y, 84, prog)
 	# selection glow
 	if sel:

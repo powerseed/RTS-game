@@ -14,6 +14,8 @@ func _draw() -> void:
 	match unit_type:
 		Game.T_AIRPORT:
 			_draw_airport_icon()
+		Game.T_RECON:
+			_draw_recon_icon()
 		Game.T_MORTAR:
 			_draw_mortar_icon()
 		Game.T_TANK:
@@ -63,6 +65,32 @@ func _draw_mortar_icon() -> void:
 	draw_circle(Vector2(size.x * 0.26, size.y * 0.42), 3.0, Color(0.918, 0.867, 0.671))
 	draw_circle(Vector2(size.x * 0.37, size.y * 0.36), 3.0, Color(0.918, 0.867, 0.671))
 	draw_circle(Vector2(size.x * 0.58, size.y * 0.80), 3.0, Color(0.918, 0.867, 0.671))
+
+func _draw_recon_icon() -> void:
+	var body := PackedVector2Array([
+		Vector2(size.x * 0.16, size.y * 0.58),
+		Vector2(size.x * 0.48, size.y * 0.46),
+		Vector2(size.x * 0.82, size.y * 0.58),
+		Vector2(size.x * 0.56, size.y * 0.66),
+		Vector2(size.x * 0.44, size.y * 0.66),
+	])
+	var wing := PackedVector2Array([
+		Vector2(size.x * 0.28, size.y * 0.50),
+		Vector2(size.x * 0.50, size.y * 0.24),
+		Vector2(size.x * 0.72, size.y * 0.50),
+		Vector2(size.x * 0.58, size.y * 0.52),
+		Vector2(size.x * 0.50, size.y * 0.40),
+		Vector2(size.x * 0.42, size.y * 0.52),
+	])
+	var tail := PackedVector2Array([
+		Vector2(size.x * 0.24, size.y * 0.58),
+		Vector2(size.x * 0.16, size.y * 0.36),
+		Vector2(size.x * 0.28, size.y * 0.52),
+	])
+	draw_colored_polygon(wing, Color(0.584, 0.678, 0.733))
+	draw_colored_polygon(body, Color(0.776, 0.831, 0.878))
+	draw_colored_polygon(tail, Color(0.584, 0.678, 0.733))
+	draw_circle(Vector2(size.x * 0.68, size.y * 0.56), 2.6, Color(0.945, 0.800, 0.447))
 
 func _draw_placeholder_icon() -> void:
 	draw_line(Vector2(size.x * 0.24, size.y * 0.24), Vector2(size.x * 0.76, size.y * 0.76), Color(0.820, 0.698, 0.431), 3.0)

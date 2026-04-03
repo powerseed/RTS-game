@@ -38,6 +38,7 @@ const T_AIRPORT := "airport"
 const T_TRUCK  := "supply_truck"
 const T_TANK   := "tank"
 const T_MORTAR := "mortar_squad"
+const T_RECON  := "recon_plane"
 
 const PLAYER := "player"
 const ENEMY  := "enemy"
@@ -54,7 +55,7 @@ const BLDG := {
 	},
 	"airport": {
 		"label": "Airport", "w": 4, "h": 3,
-		"height_px": 54, "build_time_min": 10,
+		"height_px": 54, "build_time_min": 10, "cost": 1000, "max_hp": 1000,
 	},
 }
 
@@ -65,6 +66,13 @@ const TRUCK_ARRIVE_R  := 0.34
 const TRUCK_RESUPPLY_R := 3.0
 const DEPOT_SUPPLY_R   := 8.0
 const TRUCK_RESUPPLY_S := 60.0
+const TRUCK_AURA_QUERY_S := 0.25
+const TRUCK_AURA_REQUERY_DIST := 0.28
+const TRUCK_AURA_CELL := 4.0
+const AIRPORT_BUILD_COST := 1000.0
+const AIRPORT_BUILD_HP := 1000.0
+const AIRPORT_BUILD_TIME_S := 600.0
+const AIRPORT_BUILD_RATE := AIRPORT_BUILD_COST / AIRPORT_BUILD_TIME_S
 
 # ── Gameplay tuning ──────────────────────────────────────────────────────────
 const SUP_PER_UNIT     := 0.5
@@ -1118,6 +1126,8 @@ func fp_valid(c: int, r: int, w: int, h: int) -> bool:
 	var base_elev := get_elev(c, r)
 	for rr in range(r, r + h):
 		for cc in range(c, c + w):
+			if not fexp(cc, rr):
+				return false
 			var tt: int = get_tile(cc, rr)
 			if is_water(cc, rr) or tt == Tile.BRIDGE or get_ramp(cc, rr) != Ramp.NONE or get_elev(cc, rr) != base_elev:
 				return false
