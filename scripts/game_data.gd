@@ -11,7 +11,6 @@ signal terrain_changed
 const MAP_COLS := 120
 const MAP_ROWS := 100
 const MAP_SEED := 20260330
-const ELEV_METERS_PER_LEVEL := 10.0
 const BASE_TILE_W := 78.0
 const BASE_TILE_H := 39.0
 const BASE_SLAB  := 28.0
@@ -54,8 +53,8 @@ const BLDG := {
 		"height_px": 64, "storage": 2000,
 	},
 	"airport": {
-		"label": "Airport", "w": 4, "h": 3,
-		"height_px": 54, "build_time_min": 10, "cost": 1000, "max_hp": 1000,
+		"label": "Airport", "w": 6, "h": 4,
+		"height_px": 60, "build_time_min": 10, "cost": 1000, "max_hp": 1000,
 	},
 }
 
@@ -90,8 +89,7 @@ const COL_ITERS        := 3
 const VIS_STRUCT       := 8.5
 const VIS_UNIT         := 5.5
 const VIS_TRUCK        := 4.4
-const VIS_OBSERVER_HEIGHT_M := 1.7
-const VIS_STRUCT_OBSERVER_HEIGHT_M := 6.0
+const VIS_STRUCT_EYE_LIFT := 8.0
 const VIS_FALLBACK     := 9.0
 const FOREST_CONCEALMENT := 0.60
 const EXPOSED_TTL_S    := 3.0
@@ -116,6 +114,7 @@ const EXPLOSION_TTL    := 0.34
 const OUT_OF_SUPPLY_DEATH_S := 30.0
 const DMG_BAR_S        := 1.35
 const SUPER_TANK_SPEED_MUL := 10.0
+const AIR_RETURN_RESERVE_DIST := 2.0
 
 const INIT_ENEMIES := [
 	{"x": 25.5, "y": 47.5, "hx": -1.0, "hy": 0.1},

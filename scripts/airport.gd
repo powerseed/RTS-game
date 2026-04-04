@@ -15,8 +15,8 @@ var _last_build_sig := ""
 func _ready() -> void:
 	super._ready()
 	label = "Airport"
-	grid_w = 4
-	grid_h = 3
+	grid_w = 6
+	grid_h = 4
 	max_hp = Game.AIRPORT_BUILD_HP
 	build_supply_required = Game.AIRPORT_BUILD_COST
 	build_supply_rate = Game.AIRPORT_BUILD_RATE
@@ -59,6 +59,17 @@ func _update_construction(dt: float) -> void:
 		completed = true
 		construction_completed.emit(self)
 
+func complete_instantly() -> void:
+	if completed:
+		return
+	build_supplied_total = build_supply_required
+	build_supply_buffer = 0.0
+	build_supply_consumed = build_supply_required
+	hp = max_hp
+	completed = true
+	queue_redraw()
+	construction_completed.emit(self)
+
 func is_under_construction() -> bool:
 	return not completed
 
@@ -98,30 +109,31 @@ func _draw() -> void:
 			float(grid_col) + float(grid_w) * 0.5,
 			float(grid_row) + float(grid_h) * 0.5,
 			Game.BLDG.airport.height_px + 22.0)
-		_draw_structure_hp_bar(anchor, 112.0)
+		_draw_structure_hp_bar(anchor, 148.0)
 
 func _draw_blueprint() -> void:
 	var c: float = float(grid_col)
 	var r: float = float(grid_row)
 	var sel := is_selected()
 	var pulse: float = _pulse
-	var pad := _fp(c - 0.08, r - 0.08, 4.16, 3.16, 0)
-	var runway := _fp(c + 0.24, r + 0.34, 3.20, 1.08, 0)
-	var taxi := _fp(c + 2.46, r + 1.24, 0.86, 1.06, 0)
-	var hangar := _fp(c + 0.56, r + 1.52, 1.28, 0.92, 0)
-	var tower := _fp(c + 2.86, r + 1.72, 0.36, 0.36, 0)
-	var shadow_pts := _off_pts([pad.nw, pad.ne, pad.se, pad.sw], 24, 18)
+	var pad := _fp(c - 0.08, r - 0.08, 6.16, 4.16, 0)
+	var apron := _fp(c + 0.34, r + 0.56, 5.12, 1.72, 0)
+	var runway := _fp(c + 0.38, r + 2.30, 5.12, 1.10, 0)
+	var slot_a := _fp(c + 0.92, r + 1.24, 1.48, 0.84, 0)
+	var slot_b := _fp(c + 3.08, r + 1.24, 1.48, 0.84, 0)
+	var shadow_pts := _off_pts([pad.nw, pad.ne, pad.se, pad.sw], 32, 22)
 	_poly_fill(shadow_pts, Color(0.051, 0.067, 0.078, 0.18))
 	_poly_fill([pad.nw, pad.ne, pad.se, pad.sw], Color(0.353, 0.467, 0.518, 0.14))
 	_dashed_poly([pad.nw, pad.ne, pad.se, pad.sw], Color(0.631, 0.839, 0.949, 0.90), 9.0, 6.0, 2.0)
+	_poly_fill([apron.nw, apron.ne, apron.se, apron.sw], Color(0.373, 0.427, 0.459, 0.20))
+	_poly_stroke([apron.nw, apron.ne, apron.se, apron.sw], Color(0.859, 0.906, 0.937, 0.24), 1.0)
 	_poly_fill([runway.nw, runway.ne, runway.se, runway.sw], Color(0.357, 0.420, 0.455, 0.24))
 	_poly_stroke([runway.nw, runway.ne, runway.se, runway.sw], Color(0.875, 0.914, 0.945, 0.38), 1.2)
 	var center_a := _mix(runway.nw, runway.sw, 0.5)
 	var center_b := _mix(runway.ne, runway.se, 0.5)
 	draw_line(center_a, center_b, Color(0.965, 0.949, 0.851, 0.42), 1.8)
-	_poly_fill([taxi.nw, taxi.ne, taxi.se, taxi.sw], Color(0.467, 0.569, 0.451, 0.18))
-	_dashed_poly([hangar.nw, hangar.ne, hangar.se, hangar.sw], Color(0.973, 0.922, 0.722, 0.82), 7.0, 5.0, 1.8)
-	_dashed_poly([tower.nw, tower.ne, tower.se, tower.sw], Color(0.973, 0.922, 0.722, 0.82), 6.0, 4.0, 1.6)
+	_dashed_poly([slot_a.nw, slot_a.ne, slot_a.se, slot_a.sw], Color(0.973, 0.922, 0.722, 0.84), 6.0, 4.0, 1.6)
+	_dashed_poly([slot_b.nw, slot_b.ne, slot_b.se, slot_b.sw], Color(0.973, 0.922, 0.722, 0.84), 6.0, 4.0, 1.6)
 	if sel:
 		_poly_stroke([pad.nw, pad.ne, pad.se, pad.sw], Color(1.0, 0.925, 0.631, 0.62 + pulse * 0.24), 3.0)
 	_draw_construction_bars()
@@ -130,10 +142,10 @@ func _draw_construction_bars() -> void:
 	var anchor := Game.grid_to_world(
 		float(grid_col) + float(grid_w) * 0.5,
 		float(grid_row) + float(grid_h) * 0.5,
-		34.0)
-	var bar_w := 112.0
+		40.0)
+	var bar_w := 148.0
 	var bar_h := 8.0
-	var hp_y := anchor.y - 32.0
+	var hp_y := anchor.y - 36.0
 	var sup_y := hp_y + 18.0
 	_draw_bar_with_text(
 		anchor.x - bar_w * 0.5,
@@ -178,42 +190,35 @@ func _draw_bar_with_text(x: float, y: float, w: float, h: float, total_ratio: fl
 func _draw_finished_airport() -> void:
 	var c := grid_col
 	var r := grid_row
-	var pad := _fp(c - 0.08, r - 0.08, 4.16, 3.16, 0)
-	var runway := _fp(c + 0.24, r + 0.34, 3.20, 1.08, 0)
-	var taxi := _fp(c + 2.46, r + 1.24, 0.86, 1.06, 0)
-	var hangar := _fp(c + 0.56, r + 1.52, 1.28, 0.92, 0)
-	var tower := _fp(c + 2.86, r + 1.72, 0.36, 0.36, 0)
+	var pad := _fp(c - 0.08, r - 0.08, 6.16, 4.16, 0)
+	var apron := _fp(c + 0.34, r + 0.56, 5.12, 1.72, 0)
+	var runway := _fp(c + 0.38, r + 2.30, 5.12, 1.10, 0)
+	var slot_a := _fp(c + 0.92, r + 1.24, 1.48, 0.84, 0)
+	var slot_b := _fp(c + 3.08, r + 1.24, 1.48, 0.84, 0)
 	var sel := is_selected()
 	var pulse := _pulse
-	var height_px := Game.BLDG.airport.height_px
-	_poly_fill(_off_pts([pad.nw, pad.ne, pad.se, pad.sw], 28, 18), Color(0.059, 0.071, 0.082, 0.22))
+	_poly_fill(_off_pts([pad.nw, pad.ne, pad.se, pad.sw], 34, 24), Color(0.059, 0.071, 0.082, 0.22))
 	_poly_fill([pad.nw, pad.ne, pad.se, pad.sw], Color(0.424, 0.455, 0.439))
 	_poly_stroke([pad.nw, pad.ne, pad.se, pad.sw],
 		Color(1, 0.906, 0.588, 0.9) if sel else Color(0.102, 0.122, 0.137, 0.46),
 		3.0 if sel else 2.0)
+	_poly_fill([apron.nw, apron.ne, apron.se, apron.sw], Color(0.396, 0.435, 0.459))
+	_poly_stroke([apron.nw, apron.ne, apron.se, apron.sw], Color(0.910, 0.922, 0.933, 0.12), 1.0)
+	_poly_fill([slot_a.nw, slot_a.ne, slot_a.se, slot_a.sw], Color(0.522, 0.565, 0.588))
+	_poly_fill([slot_b.nw, slot_b.ne, slot_b.se, slot_b.sw], Color(0.522, 0.565, 0.588))
+	_poly_stroke([slot_a.nw, slot_a.ne, slot_a.se, slot_a.sw], Color(0.973, 0.941, 0.812, 0.90), 1.8)
+	_poly_stroke([slot_b.nw, slot_b.ne, slot_b.se, slot_b.sw], Color(0.973, 0.941, 0.812, 0.90), 1.8)
+	draw_line(_mix(slot_a.nw, slot_a.sw, 0.5), _mix(slot_a.ne, slot_a.se, 0.5), Color(0.973, 0.949, 0.859, 0.88), 1.8)
+	draw_line(_mix(slot_b.nw, slot_b.sw, 0.5), _mix(slot_b.ne, slot_b.se, 0.5), Color(0.973, 0.949, 0.859, 0.88), 1.8)
 	_poly_fill([runway.nw, runway.ne, runway.se, runway.sw], Color(0.251, 0.282, 0.314))
 	_poly_stroke([runway.nw, runway.ne, runway.se, runway.sw], Color(0.910, 0.922, 0.933, 0.18), 1.0)
 	var center_a := _mix(runway.nw, runway.sw, 0.5)
 	var center_b := _mix(runway.ne, runway.se, 0.5)
 	draw_line(center_a, center_b, Color(0.973, 0.949, 0.859), 2.0)
-	var dash_offsets := [0.18, 0.34, 0.50, 0.66, 0.82]
+	var dash_offsets := [0.12, 0.24, 0.36, 0.48, 0.60, 0.72, 0.84]
 	for t in dash_offsets:
-		var dash_start := _mix(center_a, center_b, t - 0.04)
-		var dash_end := _mix(center_a, center_b, t + 0.04)
+		var dash_start := _mix(center_a, center_b, t - 0.03)
+		var dash_end := _mix(center_a, center_b, t + 0.03)
 		draw_line(dash_start, dash_end, Color(0.145, 0.161, 0.173), 2.0)
-	_poly_fill([taxi.nw, taxi.ne, taxi.se, taxi.sw], Color(0.471, 0.522, 0.380))
-	_prism(hangar, height_px, Color(0.694, 0.729, 0.761), Color(0.541, 0.576, 0.612), Color(0.451, 0.482, 0.514))
-	var hangar_door_lb := Game.grid_to_world(c + 0.92, r + 2.44, 0)
-	var hangar_door_rb := Game.grid_to_world(c + 1.48, r + 2.44, 0)
-	var hangar_door_lt := Game.grid_to_world(c + 0.92, r + 2.44, 26)
-	var hangar_door_rt := Game.grid_to_world(c + 1.48, r + 2.44, 26)
-	_poly_fill([hangar_door_lt, hangar_door_rt, hangar_door_rb, hangar_door_lb], Color(0.176, 0.200, 0.224))
-	_prism(tower, height_px + 14, Color(0.780, 0.808, 0.827), Color(0.627, 0.659, 0.682), Color(0.537, 0.565, 0.592))
-	_poly_fill([
-		Game.grid_to_world(c + 2.76, r + 1.62, height_px + 18),
-		Game.grid_to_world(c + 3.26, r + 1.62, height_px + 18),
-		Game.grid_to_world(c + 3.26, r + 2.10, height_px + 18),
-		Game.grid_to_world(c + 2.76, r + 2.10, height_px + 18),
-	], Color(0.941, 0.800, 0.447))
 	if sel:
 		_poly_stroke([pad.nw, pad.ne, pad.se, pad.sw], Color(1, 0.902, 0.549, 0.6 + pulse * 0.25), 3.0)

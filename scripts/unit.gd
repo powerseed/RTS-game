@@ -12,6 +12,8 @@ var gy: float = 0.0
 var destination: Variant = null  # Vector2 or null
 var path: Array[Vector2] = []
 var path_goal: Variant = null  # Vector2 or null
+var route_points: Array[Vector2] = []
+var route_blind_moves: Array[bool] = []
 var next_repath_at: float = 0.0
 var blind_move: bool = false
 var attack_target: Variant = null  # Unit or null
@@ -71,6 +73,12 @@ func get_collision_radius() -> float:
 func get_lift() -> float:
 	return Game.surface_lift_at(gx, gy) + 15.0
 
+func get_eye_lift() -> float:
+	return Game.surface_lift_at(gx, gy)
+
+func affected_by_ground_concealment() -> bool:
+	return true
+
 func is_selected() -> bool:
 	return self in Game.selected_units
 
@@ -81,6 +89,8 @@ func is_exposed() -> bool:
 	return exposed_until > Game.elapsed
 
 func is_concealed() -> bool:
+	if not affected_by_ground_concealment():
+		return false
 	return Game.get_tile(clampi(int(gx), 0, Game.MAP_COLS - 1), clampi(int(gy), 0, Game.MAP_ROWS - 1)) == Game.Tile.FOREST and not is_exposed()
 
 func is_out_of_supply() -> bool:

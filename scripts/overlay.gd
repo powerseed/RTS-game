@@ -21,6 +21,7 @@ var _last_overlay_sig := ""
 var _mouse_warning_text: String = ""
 var _mouse_warning_world := Vector2.ZERO
 var _mouse_warning_until: float = 0.0
+var _route_preview_points: Array[Vector2] = []
 
 func _ready() -> void:
 	z_index = 3000
@@ -55,6 +56,7 @@ func _draw() -> void:
 	_draw_depot_radius()
 	_draw_truck_radius()
 	_draw_ghost()
+	_draw_route_preview()
 	_draw_mouse_warning()
 
 # Public API
@@ -68,6 +70,23 @@ func show_mouse_warning(msg: String, screen_pos: Vector2, duration: float = 0.95
 	_mouse_warning_world = Game.screen_to_world(screen_pos + Vector2(18.0, -14.0))
 	_mouse_warning_until = Game.elapsed + maxf(duration, 0.1)
 	queue_redraw()
+
+func set_route_preview(points: Array[Vector2]) -> void:
+	_route_preview_points = []
+	for point in points:
+		_route_preview_points.append(point)
+	queue_redraw()
+
+func clear_route_preview() -> void:
+	if _route_preview_points.is_empty():
+		return
+	_route_preview_points.clear()
+	queue_redraw()
+
+func route_done_hit(screen_pos: Vector2) -> bool:
+	if _route_preview_points.is_empty():
+		return false
+	return _route_done_rect_world().has_point(Game.screen_to_world(screen_pos))
 
 # Shells / explosions
 func _update_shells(dt: float) -> void:
@@ -183,6 +202,52 @@ func _draw_mouse_warning() -> void:
 		Color(1.0, 0.910, 0.890)
 	)
 
+func _route_pin_world(point: Vector2) -> Vector2:
+	return Game.grid_to_world(point.x, point.y, Game.surface_lift_at(point.x, point.y) + 10.0)
+
+func _route_done_rect_world() -> Rect2:
+	var font := ThemeDB.fallback_font
+	var font_size := 16
+	var text := "Done"
+	var text_size := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+	var pad := Vector2(10.0, 6.0)
+	var anchor := _route_pin_world(_route_preview_points[_route_preview_points.size() - 1])
+	var box_pos := anchor + Vector2(16.0, -text_size.y - 8.0)
+	var box_size := Vector2(text_size.x + pad.x * 2.0, text_size.y + pad.y * 2.0)
+	return Rect2(box_pos, box_size)
+
+func _draw_route_preview() -> void:
+	if _route_preview_points.is_empty():
+		return
+	var prev_world := Vector2.ZERO
+	for i in range(_route_preview_points.size()):
+		var point: Vector2 = _route_preview_points[i]
+		var world := _route_pin_world(point)
+		if i > 0:
+			draw_line(prev_world, world, Color(0.741, 0.894, 0.988, 0.92), 2.0)
+		prev_world = world
+		draw_line(world + Vector2(0.0, -16.0), world + Vector2(0.0, 8.0), Color(0.929, 0.937, 0.957, 0.95), 1.8)
+		draw_colored_polygon(PackedVector2Array([
+			world + Vector2(1.0, -16.0),
+			world + Vector2(14.0, -12.0),
+			world + Vector2(1.0, -6.0),
+		]), Color(0.376, 0.631, 0.961, 0.94))
+		_ellipse_fill(world + Vector2(0.0, 9.0), 4.0, 2.6, Color(0.055, 0.067, 0.078, 0.32))
+		var step_text := str(i + 1)
+		draw_string(ThemeDB.fallback_font, world + Vector2(18.0, -8.0), step_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.965, 0.980, 1.0, 0.96))
+	var done_rect := _route_done_rect_world()
+	draw_rect(done_rect, Color(0.153, 0.227, 0.161, 0.92))
+	draw_rect(done_rect, Color(0.718, 0.933, 0.765, 0.95), false, 1.4)
+	draw_string(
+		ThemeDB.fallback_font,
+		done_rect.position + Vector2(10.0, 6.0 + ThemeDB.fallback_font.get_string_size("Done", HORIZONTAL_ALIGNMENT_LEFT, -1, 16).y * 0.8),
+		"Done",
+		HORIZONTAL_ALIGNMENT_LEFT,
+		-1,
+		16,
+		Color(0.922, 0.980, 0.937, 0.98)
+	)
+
 # Fog of war
 func _draw_fog() -> void:
 	if Game.fog_revision != _seen_fog_revision:
@@ -206,6 +271,11 @@ func _overlay_signature() -> String:
 	]
 	if Game.build_mode != "":
 		parts.append("ht:" + str(Game.hover_tile.x) + "," + str(Game.hover_tile.y))
+	if not _route_preview_points.is_empty():
+		var route_parts: Array[String] = []
+		for point in _route_preview_points:
+			route_parts.append("%d,%d" % [roundi(point.x * 10.0), roundi(point.y * 10.0)])
+		parts.append("rt:" + "|".join(route_parts))
 	if _mouse_warning_text != "" and Game.elapsed < _mouse_warning_until:
 		parts.append("mw:%s:%d:%d" % [_mouse_warning_text, roundi(_mouse_warning_world.x), roundi(_mouse_warning_world.y)])
 	var ss = Game.selected_structure

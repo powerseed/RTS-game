@@ -10,6 +10,8 @@ signal tank_queue_pause_requested
 signal tank_queue_cancel_requested
 signal mortar_queue_pause_requested
 signal mortar_queue_cancel_requested
+signal recon_queue_pause_requested
+signal recon_queue_cancel_requested
 
 const MiniMapScript := preload("res://scripts/minimap.gd")
 const UnitIconScript := preload("res://scripts/unit_icon.gd")
@@ -52,8 +54,18 @@ var unit_catalog_panel: PanelContainer
 var unit_catalog_supply_label: Label
 var airport_icon_button: Button
 var aerial_category_panel: PanelContainer
+var aerial_category_title_label: Label
 var aerial_category_body_label: Label
-var aerial_recon_status_label: Label
+var aerial_recon_row: VBoxContainer
+var aerial_recon_icon_button: Button
+var aerial_recon_name_button: Button
+var recon_count_input: SpinBox
+var recon_count_line_edit: LineEdit
+var recon_build_button: Button
+var recon_pause_button: Button
+var recon_cancel_button: Button
+var recon_queue_bar: ProgressBar
+var recon_queue_count_label: Label
 var tank_count_input: SpinBox
 var tank_count_line_edit: LineEdit
 var tank_build_button: Button
@@ -70,6 +82,7 @@ var mortar_cancel_button: Button
 var mortar_queue_bar: ProgressBar
 var mortar_queue_count_label: Label
 var _mortar_count_text_guard: bool = false
+var _recon_count_text_guard: bool = false
 
 # ── colours ──────────────────────────────────────────────────────────────────
 const C_PANEL   := Color(0.204, 0.137, 0.075, 0.80)
@@ -77,6 +90,10 @@ const C_LINE    := Color(1.0, 0.961, 0.851, 0.18)
 const C_TEXT    := Color(0.973, 0.945, 0.871)
 const C_MUTED   := Color(0.835, 0.780, 0.631)
 const C_ACCENT  := Color(1.0, 0.855, 0.447)
+const C_DISABLED_PANEL := Color(0.172, 0.184, 0.204, 0.84)
+const C_DISABLED_LINE := Color(0.780, 0.808, 0.847, 0.20)
+const C_DISABLED_TEXT := Color(0.773, 0.796, 0.835)
+const C_DISABLED_MUTED := Color(0.620, 0.651, 0.698)
 const C_BTN_BG  := Color(0.373, 0.282, 0.180, 0.55)
 const C_BTN_BD  := Color(1.0, 0.855, 0.447, 0.45)
 const C_HP_A    := Color(0.455, 0.776, 0.427)
@@ -138,6 +155,8 @@ func _scale_all_ui_fonts() -> void:
 		tank_queue_bar.custom_minimum_size.y = 32.0
 	if mortar_queue_bar != null:
 		mortar_queue_bar.custom_minimum_size.y = 32.0
+	if recon_queue_bar != null:
+		recon_queue_bar.custom_minimum_size.y = 32.0
 	if prod_progress != null:
 		prod_progress.custom_minimum_size.y = 18.0
 
@@ -245,40 +264,142 @@ func _build_unit_category(title_text: String, body_text: String, include_tank: b
 func _build_aerial_category() -> Control:
 	aerial_category_panel = PanelContainer.new()
 	aerial_category_panel.add_theme_stylebox_override("panel", _panel_style(14))
-	aerial_category_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	aerial_category_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 8)
 	aerial_category_panel.add_child(vbox)
-	var title := Label.new()
-	title.text = "Aerial Units"
-	title.add_theme_color_override("font_color", C_TEXT)
-	title.add_theme_font_size_override("font_size", 15)
-	vbox.add_child(title)
+	aerial_category_title_label = Label.new()
+	aerial_category_title_label.text = "Aerial Units"
+	aerial_category_title_label.add_theme_color_override("font_color", C_TEXT)
+	aerial_category_title_label.add_theme_font_size_override("font_size", 15)
+	vbox.add_child(aerial_category_title_label)
 	aerial_category_body_label = Label.new()
 	aerial_category_body_label.text = "Requires at least one completed Airport."
 	aerial_category_body_label.add_theme_color_override("font_color", C_MUTED)
 	aerial_category_body_label.add_theme_font_size_override("font_size", 12)
 	aerial_category_body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(aerial_category_body_label)
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 10)
-	var icon := UnitIconScript.new() as UnitIcon
-	icon.unit_type = Game.T_RECON
-	row.add_child(icon)
-	var name := Label.new()
-	name.text = "Reconnaissance Plane"
-	name.custom_minimum_size = Vector2(172, 0)
-	name.add_theme_color_override("font_color", C_TEXT)
-	name.add_theme_font_size_override("font_size", 14)
-	row.add_child(name)
-	aerial_recon_status_label = Label.new()
-	aerial_recon_status_label.text = "Inactive"
-	aerial_recon_status_label.add_theme_color_override("font_color", C_MUTED)
-	aerial_recon_status_label.add_theme_font_size_override("font_size", 13)
-	row.add_child(aerial_recon_status_label)
-	vbox.add_child(row)
-	set_aerial_units_active(false)
+	aerial_recon_row = VBoxContainer.new()
+	aerial_recon_row.add_theme_constant_override("separation", 6)
+	var row_top := HBoxContainer.new()
+	row_top.alignment = BoxContainer.ALIGNMENT_CENTER
+	row_top.add_theme_constant_override("separation", 10)
+	aerial_recon_icon_button = Button.new()
+	aerial_recon_icon_button.custom_minimum_size = Vector2(56, 56)
+	aerial_recon_icon_button.focus_mode = Control.FOCUS_NONE
+	aerial_recon_icon_button.text = ""
+	aerial_recon_icon_button.add_theme_stylebox_override("normal", _icon_btn_style())
+	aerial_recon_icon_button.add_theme_stylebox_override("hover", _icon_btn_style())
+	aerial_recon_icon_button.add_theme_stylebox_override("pressed", _icon_btn_style_armed())
+	aerial_recon_icon_button.add_theme_stylebox_override("focus", _icon_btn_style())
+	aerial_recon_icon_button.add_theme_stylebox_override("disabled", _icon_btn_style())
+	aerial_recon_icon_button.pressed.connect(_on_build_recon_pressed)
+	var icon_wrap := CenterContainer.new()
+	icon_wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon_wrap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	aerial_recon_icon_button.add_child(icon_wrap)
+	var recon_icon := UnitIconScript.new() as UnitIcon
+	recon_icon.unit_type = Game.T_RECON
+	recon_icon.custom_minimum_size = Vector2(44, 44)
+	icon_wrap.add_child(recon_icon)
+	row_top.add_child(aerial_recon_icon_button)
+	aerial_recon_name_button = Button.new()
+	aerial_recon_name_button.text = "Reconnaissance Plane (2 mins)"
+	aerial_recon_name_button.custom_minimum_size = Vector2(248, 0)
+	aerial_recon_name_button.focus_mode = Control.FOCUS_NONE
+	aerial_recon_name_button.flat = true
+	aerial_recon_name_button.add_theme_stylebox_override("normal", StyleBoxEmpty.new())
+	aerial_recon_name_button.add_theme_stylebox_override("hover", StyleBoxEmpty.new())
+	aerial_recon_name_button.add_theme_stylebox_override("pressed", StyleBoxEmpty.new())
+	aerial_recon_name_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	aerial_recon_name_button.add_theme_stylebox_override("disabled", StyleBoxEmpty.new())
+	aerial_recon_name_button.add_theme_color_override("font_color", C_TEXT)
+	aerial_recon_name_button.add_theme_color_override("font_hover_color", C_ACCENT)
+	aerial_recon_name_button.add_theme_color_override("font_pressed_color", C_ACCENT)
+	aerial_recon_name_button.add_theme_font_size_override("font_size", 14)
+	aerial_recon_name_button.pressed.connect(_on_build_recon_pressed)
+	row_top.add_child(aerial_recon_name_button)
+	var build_cost := Label.new()
+	build_cost.text = "500 supply"
+	build_cost.add_theme_color_override("font_color", C_ACCENT)
+	build_cost.add_theme_font_size_override("font_size", 13)
+	row_top.add_child(build_cost)
+	aerial_recon_row.add_child(row_top)
+	var row_bottom := HBoxContainer.new()
+	row_bottom.alignment = BoxContainer.ALIGNMENT_BEGIN
+	row_bottom.add_theme_constant_override("separation", 10)
+	recon_count_input = SpinBox.new()
+	recon_count_input.min_value = 1
+	recon_count_input.max_value = 99999
+	recon_count_input.step = 1
+	recon_count_input.rounded = true
+	recon_count_input.value = 1
+	recon_count_input.custom_minimum_size = Vector2(72, 0)
+	recon_count_line_edit = recon_count_input.get_line_edit()
+	if recon_count_line_edit != null:
+		recon_count_line_edit.text = "1"
+		recon_count_line_edit.max_length = 5
+		recon_count_line_edit.text_changed.connect(_on_recon_count_text_changed)
+		recon_count_line_edit.focus_exited.connect(_normalize_recon_count_input)
+	row_bottom.add_child(recon_count_input)
+	recon_build_button = Button.new()
+	recon_build_button.text = "Build"
+	recon_build_button.focus_mode = Control.FOCUS_NONE
+	recon_build_button.add_theme_stylebox_override("normal", _btn_style())
+	recon_build_button.add_theme_stylebox_override("hover", _btn_style())
+	recon_build_button.add_theme_stylebox_override("pressed", _btn_style_armed())
+	recon_build_button.add_theme_stylebox_override("focus", _btn_style())
+	recon_build_button.add_theme_color_override("font_color", C_TEXT)
+	recon_build_button.add_theme_font_size_override("font_size", 13)
+	recon_build_button.pressed.connect(_on_build_recon_pressed)
+	row_bottom.add_child(recon_build_button)
+	recon_pause_button = Button.new()
+	recon_pause_button.text = "Pause"
+	recon_pause_button.focus_mode = Control.FOCUS_NONE
+	recon_pause_button.add_theme_stylebox_override("normal", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	recon_pause_button.add_theme_stylebox_override("hover", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	recon_pause_button.add_theme_stylebox_override("pressed", _btn_style_tinted(C_PAUSE_BD, C_PAUSE_BD))
+	recon_pause_button.add_theme_stylebox_override("focus", _btn_style_tinted(C_PAUSE_BG, C_PAUSE_BD))
+	recon_pause_button.add_theme_color_override("font_color", C_PAUSE_TX)
+	recon_pause_button.add_theme_font_size_override("font_size", 13)
+	recon_pause_button.disabled = true
+	recon_pause_button.pressed.connect(_on_pause_recon_queue_pressed)
+	row_bottom.add_child(recon_pause_button)
+	recon_cancel_button = Button.new()
+	recon_cancel_button.text = "Cancel"
+	recon_cancel_button.focus_mode = Control.FOCUS_NONE
+	recon_cancel_button.add_theme_stylebox_override("normal", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	recon_cancel_button.add_theme_stylebox_override("hover", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	recon_cancel_button.add_theme_stylebox_override("pressed", _btn_style_tinted(C_CANCEL_BD, C_CANCEL_BD))
+	recon_cancel_button.add_theme_stylebox_override("focus", _btn_style_tinted(C_CANCEL_BG, C_CANCEL_BD))
+	recon_cancel_button.add_theme_color_override("font_color", C_CANCEL_TX)
+	recon_cancel_button.add_theme_font_size_override("font_size", 13)
+	recon_cancel_button.disabled = true
+	recon_cancel_button.pressed.connect(_on_cancel_recon_queue_pressed)
+	row_bottom.add_child(recon_cancel_button)
+	aerial_recon_row.add_child(row_bottom)
+	vbox.add_child(aerial_recon_row)
+	recon_queue_bar = ProgressBar.new()
+	recon_queue_bar.max_value = 1.0
+	recon_queue_bar.show_percentage = false
+	recon_queue_bar.value = 0.0
+	recon_queue_bar.custom_minimum_size = Vector2(0, 22)
+	recon_queue_bar.add_theme_stylebox_override("background", _bar_bg_style())
+	recon_queue_bar.add_theme_stylebox_override("fill", _bar_style(C_ACCENT, C_SUP_B))
+	vbox.add_child(recon_queue_bar)
+	recon_queue_count_label = Label.new()
+	recon_queue_count_label.text = ""
+	recon_queue_count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	recon_queue_count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	recon_queue_count_label.anchor_right = 1.0
+	recon_queue_count_label.anchor_bottom = 1.0
+	recon_queue_count_label.add_theme_color_override("font_color", Color(0.180, 0.125, 0.071))
+	recon_queue_count_label.add_theme_color_override("font_outline_color", C_TEXT)
+	recon_queue_count_label.add_theme_constant_override("outline_size", 2)
+	recon_queue_count_label.add_theme_font_size_override("font_size", 13)
+	recon_queue_count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	recon_queue_bar.add_child(recon_queue_count_label)
+	set_aerial_units_active(false, "Requires at least one completed Airport.")
 	return aerial_category_panel
 
 func _build_airport_row() -> Control:
@@ -721,6 +842,12 @@ func _panel_style(radius: int = 18) -> StyleBoxFlat:
 	s.content_margin_right = 18; s.content_margin_bottom = 16
 	return s
 
+func _panel_style_disabled(radius: int = 18) -> StyleBoxFlat:
+	var s := _panel_style(radius)
+	s.bg_color = C_DISABLED_PANEL
+	s.border_color = C_DISABLED_LINE
+	return s
+
 func _btn_style() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = C_BTN_BG
@@ -860,6 +987,39 @@ func _set_mortar_count_value(value: int) -> void:
 		mortar_count_line_edit.text = str(clamped_value)
 	_mortar_count_text_guard = false
 
+func _on_recon_count_text_changed(new_text: String) -> void:
+	if _recon_count_text_guard:
+		return
+	var digits_only := _digits_only_text(new_text)
+	if digits_only.length() > 5:
+		digits_only = digits_only.substr(0, 5)
+	if digits_only != new_text and recon_count_line_edit != null:
+		_recon_count_text_guard = true
+		recon_count_line_edit.text = digits_only
+		_recon_count_text_guard = false
+	if digits_only.is_empty():
+		return
+	var next_value: int = clampi(int(digits_only), int(recon_count_input.min_value), int(recon_count_input.max_value))
+	_set_recon_count_value(next_value)
+
+func _normalize_recon_count_input() -> void:
+	if recon_count_input == null:
+		return
+	if recon_count_line_edit == null:
+		_set_recon_count_value(maxi(1, int(round(recon_count_input.value))))
+		return
+	var digits_only := _digits_only_text(recon_count_line_edit.text)
+	var next_value: int = 1 if digits_only.is_empty() else clampi(int(digits_only), int(recon_count_input.min_value), int(recon_count_input.max_value))
+	_set_recon_count_value(next_value)
+
+func _set_recon_count_value(value: int) -> void:
+	var clamped_value: int = clampi(value, int(recon_count_input.min_value), int(recon_count_input.max_value))
+	_recon_count_text_guard = true
+	recon_count_input.value = clamped_value
+	if recon_count_line_edit != null:
+		recon_count_line_edit.text = str(clamped_value)
+	_recon_count_text_guard = false
+
 func _digits_only_text(raw_text: String) -> String:
 	var digits_only := ""
 	for i in range(raw_text.length()):
@@ -878,6 +1038,11 @@ func _on_build_mortar_pressed() -> void:
 	var amount: int = maxi(1, int(round(mortar_count_input.value)))
 	unit_build_requested.emit(Game.T_MORTAR, amount)
 
+func _on_build_recon_pressed() -> void:
+	_normalize_recon_count_input()
+	var amount: int = maxi(1, int(round(recon_count_input.value)))
+	unit_build_requested.emit(Game.T_RECON, amount)
+
 func _on_pause_tank_queue_pressed() -> void:
 	tank_queue_pause_requested.emit()
 
@@ -889,6 +1054,12 @@ func _on_pause_mortar_queue_pressed() -> void:
 
 func _on_cancel_mortar_queue_pressed() -> void:
 	mortar_queue_cancel_requested.emit()
+
+func _on_pause_recon_queue_pressed() -> void:
+	recon_queue_pause_requested.emit()
+
+func _on_cancel_recon_queue_pressed() -> void:
+	recon_queue_cancel_requested.emit()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  PUBLIC API (called from main.gd)
@@ -907,16 +1078,30 @@ func set_unit_catalog_supply(current: float) -> void:
 	if unit_catalog_supply_label != null:
 		unit_catalog_supply_label.text = "Supply Pool: " + str(roundi(current))
 
-func set_aerial_units_active(active: bool) -> void:
+func set_aerial_units_active(active: bool, inactive_reason: String = "") -> void:
 	if aerial_category_panel == null:
 		return
-	aerial_category_panel.self_modulate = Color(1.0, 1.0, 1.0, 1.0 if active else 0.45)
+	aerial_category_panel.add_theme_stylebox_override("panel", _panel_style(14) if active else _panel_style_disabled(14))
+	aerial_category_panel.self_modulate = Color(1.0, 1.0, 1.0, 1.0)
+	if aerial_category_title_label != null:
+		aerial_category_title_label.add_theme_color_override("font_color", C_TEXT if active else C_DISABLED_TEXT)
 	if aerial_category_body_label != null:
-		aerial_category_body_label.text = "Aircraft can operate from player Airports." if active else "Requires at least one completed Airport."
-		aerial_category_body_label.add_theme_color_override("font_color", C_MUTED if active else Color(0.718, 0.635, 0.494))
-	if aerial_recon_status_label != null:
-		aerial_recon_status_label.text = "Online" if active else "Inactive"
-		aerial_recon_status_label.add_theme_color_override("font_color", C_ACCENT if active else C_MUTED)
+		aerial_category_body_label.text = "Aircraft can operate from player Airports." if active else inactive_reason
+		aerial_category_body_label.add_theme_color_override("font_color", C_MUTED if active else C_DISABLED_MUTED)
+	if aerial_recon_row != null:
+		aerial_recon_row.self_modulate = Color(1.0, 1.0, 1.0, 1.0 if active else 0.84)
+	if aerial_recon_icon_button != null:
+		aerial_recon_icon_button.disabled = not active
+		aerial_recon_icon_button.self_modulate = Color(1.0, 1.0, 1.0, 1.0) if active else Color(0.68, 0.70, 0.74, 0.92)
+	if aerial_recon_name_button != null:
+		aerial_recon_name_button.disabled = not active
+		aerial_recon_name_button.add_theme_color_override("font_color", C_TEXT if active else C_DISABLED_TEXT)
+		aerial_recon_name_button.add_theme_color_override("font_hover_color", C_ACCENT if active else C_DISABLED_TEXT)
+		aerial_recon_name_button.add_theme_color_override("font_pressed_color", C_ACCENT if active else C_DISABLED_TEXT)
+	if recon_count_input != null:
+		recon_count_input.editable = active
+	if recon_build_button != null:
+		recon_build_button.disabled = not active
 
 func set_tank_queue_status(queue_count: int, progress: float, waiting_for_space: bool, paused: bool) -> void:
 	if tank_queue_bar == null or tank_queue_count_label == null:
@@ -955,6 +1140,25 @@ func set_mortar_queue_status(queue_count: int, progress: float, waiting_for_spac
 		return
 	mortar_queue_bar.value = clampf(progress, 0.0, 1.0)
 	mortar_queue_count_label.text = str(queue_count)
+
+func set_recon_queue_status(queue_count: int, progress: float, waiting_for_space: bool, paused: bool) -> void:
+	if recon_queue_bar == null or recon_queue_count_label == null:
+		return
+	if recon_pause_button != null:
+		recon_pause_button.disabled = queue_count <= 0
+		recon_pause_button.text = "Resume" if paused and queue_count > 0 else "Pause"
+	if recon_cancel_button != null:
+		recon_cancel_button.disabled = queue_count <= 0
+	if queue_count <= 0:
+		recon_queue_bar.value = 0.0
+		recon_queue_count_label.text = ""
+		return
+	if waiting_for_space and not paused:
+		recon_queue_bar.value = 1.0
+		recon_queue_count_label.text = str(queue_count)
+		return
+	recon_queue_bar.value = clampf(progress, 0.0, 1.0)
+	recon_queue_count_label.text = str(queue_count)
 
 func set_sel_pill(txt: String) -> void:
 	lbl_sel_pill.text = txt
@@ -1082,12 +1286,13 @@ func show_units(us: Array[Node2D]) -> void:
 		var u: Unit = us[0] as Unit
 		var is_truck: bool = u is Truck
 		var is_mortar: bool = u is MortarSquad
-		var ul: String = "Supply Truck" if is_truck else ("Mortar Squad" if is_mortar else "Tank")
+		var is_recon: bool = u is ReconPlane
+		var ul: String = "Supply Truck" if is_truck else ("Mortar Squad" if is_mortar else ("Reconnaissance Plane" if is_recon else "Tank"))
 		var sl: String = "Cargo Load" if is_truck else "Supplies"
 		var sp: String = "Load: " if is_truck else "Supplies: "
-		var uc: String = "Mobile logistics vehicle. Its supplies bar shows cargo only." if is_truck else ("Infantry fire support squad. Longer-ranged indirect fire with lighter durability." if is_mortar else "Armored vehicle. Supplies consumed as it moves. Auto-fires on enemies.")
+		var uc: String = "Mobile logistics vehicle. Its supplies bar shows cargo only." if is_truck else ("Infantry fire support squad. Longer-ranged indirect fire with lighter durability." if is_mortar else ("Unarmed air scout. Right-click the map to fly it over terrain and structures." if is_recon else "Armored vehicle. Supplies consumed as it moves. Auto-fires on enemies."))
 		lbl_sel_pill.text = ul + " #" + str(u.entity_id)
-		lbl_sel_detail.text = "Movable unit selected. Right-click the map to move it. Ctrl+Right-click force-attacks ground."
+		lbl_sel_detail.text = "Air unit selected. Right-click the map to fly it. Ground terrain and structures do not block it." if is_recon else "Movable unit selected. Right-click the map to move it. Ctrl+Right-click force-attacks ground."
 		lbl_unit_pill.text = ul + " selected"
 		lbl_unit_name.text = ul + " #" + str(u.entity_id)
 		lbl_unit_copy.text = uc
@@ -1102,19 +1307,21 @@ func show_units(us: Array[Node2D]) -> void:
 		return
 	# multiple units
 	var th := 0.0; var tmh := 0.0; var ts := 0.0; var tms := 0.0
-	var tc := 0; var trc := 0; var mc := 0
+	var tc := 0; var trc := 0; var mc := 0; var rc := 0
 	for u_node in us:
 		var u: Unit = u_node as Unit
 		th += u.hp; tmh += u.max_hp; ts += u.supplies; tms += u.max_supplies
 		if u is MortarSquad: mc += 1
 		elif u is Tank: tc += 1
 		elif u is Truck: trc += 1
+		elif u is ReconPlane: rc += 1
 	var label := str(us.size()) + " Units"
 	if mc == us.size(): label = str(us.size()) + " Mortar Squads"
 	elif tc == us.size(): label = str(us.size()) + " Tanks"
 	elif trc == us.size(): label = str(us.size()) + " Trucks"
+	elif rc == us.size(): label = str(us.size()) + " Reconnaissance Planes"
 	lbl_sel_pill.text = label
-	lbl_sel_detail.text = "Movable units selected. Right-click moves the group. Ctrl+Right-click force-attacks ground."
+	lbl_sel_detail.text = "Reconnaissance planes selected. Right-click moves the group through the air." if rc == us.size() else "Movable units selected. Right-click moves the group. Ctrl+Right-click force-attacks ground."
 	lbl_unit_pill.text = str(us.size()) + " selected"
 	lbl_unit_name.text = label
 	lbl_unit_copy.text = "Group status shown as combined totals."
